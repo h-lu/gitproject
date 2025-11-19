@@ -38,7 +38,9 @@ def create_user(gitea_url, token, username, password, email=None, full_name=None
     """
     # 如果没有提供邮箱，自动生成
     if not email:
-        email = f"{username}@example.com"
+        # 使用 .local 顶级域名（RFC 6762 保留用于本地网络）
+        # 这是一个有效且不会与真实域名冲突的测试域名
+        email = f"{username}@gitea.local"
     
     # 如果没有提供全名，使用用户名
     if not full_name:
@@ -158,11 +160,12 @@ def main():
     )
     
     parser.add_argument("--students", required=True, help="学生列表文件路径")
-    parser.add_argument("--password", default="12345678", help="统一密码（默认: 12345678）")
+    parser.add_argument("--password", default="12345678", help="新用户的默认密码")
+    parser.add_argument("--output", help="账号信息输出文件路径 (默认: user_accounts.txt)")
+    parser.add_argument("--dry-run", action="store_true", help="试运行模式，不实际创建用户")
+    parser.add_argument("--skip-existing", action="store_true", help="跳过已存在的用户")
     parser.add_argument("--gitea-url", default=os.getenv("GITEA_URL", "http://localhost:3000"))
     parser.add_argument("--token", default=os.getenv("GITEA_ADMIN_TOKEN", ""))
-    parser.add_argument("--dry-run", action="store_true", help="试运行模式（不实际创建用户）")
-    parser.add_argument("--skip-existing", action="store_true", help="跳过已存在的用户（不报错）")
     
     args = parser.parse_args()
     
@@ -247,8 +250,15 @@ def main():
         print("   3. 用户名或邮箱格式不合法")
         print("   4. 密码不符合安全要求")
     
+    
     # 输出账号信息到文件
-    output_file = "user_accounts.txt"
+    if args.output:
+        output_file = args.output
+    else:
+        # 默认放在学生文件所在目录
+        students_dir = os.path.dirname(args.students) or "."
+        output_file = os.path.join(students_dir, "user_accounts.txt")
+    
     with open(output_file, "w", encoding="utf-8") as f:
         f.write("# Gitea 用户账号信息\n")
         f.write(f"# 生成时间: {__import__('datetime').datetime.now()}\n")
@@ -257,7 +267,7 @@ def main():
         f.write("用户名\t密码\t邮箱\n")
         f.write("-" * 60 + "\n")
         for username, email, full_name in students:
-            display_email = email if email else f"{username}@example.com"
+            display_email = email if email else f"{username}@gitea.local"
             f.write(f"{username}\t{args.password}\t{display_email}\n")
     
     print()

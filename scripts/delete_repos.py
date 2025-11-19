@@ -88,16 +88,20 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  python scripts/delete_repos.py --prefix hw1-stu
-  python scripts/delete_repos.py --prefix hw1-stu --force
-  python scripts/delete_repos.py --prefix hw2-stu --dry-run
+  # 多课程模式
+  python scripts/delete_repos.py --course courses/CS101 --assignment hw1
+  python scripts/delete_repos.py --course courses/CS101 --assignment hw1 --force
+  python scripts/delete_repos.py --course courses/CS101 --assignment hw1 --dry-run
         """
     )
     
-    parser.add_argument("--prefix", default="hw1-stu", help="仓库名前缀（默认: hw1-stu）")
+    # Required arguments
+    parser.add_argument("--course", required=True, help="课程路径 (例如: courses/CS101)")
+    parser.add_argument("--assignment", required=True, help="作业ID (例如: hw1)")
+    
+    # Optional arguments
     parser.add_argument("--gitea-url", default=os.getenv("GITEA_URL", "http://localhost:3000"))
     parser.add_argument("--token", default=os.getenv("GITEA_ADMIN_TOKEN", ""))
-    parser.add_argument("--org", default=os.getenv("ORGANIZATION", "course-test"))
     parser.add_argument("--force", action="store_true", help="跳过确认提示")
     parser.add_argument("--dry-run", action="store_true", help="试运行模式（不实际删除）")
     
@@ -107,14 +111,31 @@ def main():
         print("Error: GITEA_ADMIN_TOKEN not set", file=sys.stderr)
         sys.exit(1)
     
+    # Load course config
+    try:
+        import yaml
+        from pathlib import Path
+        course_config_path = Path(args.course) / "course_config.yaml"
+        with open(course_config_path) as f:
+            course_config = yaml.safe_load(f)
+        org = course_config.get("organization")
+        if not org:
+            print("Error: 'organization' not defined in course config", file=sys.stderr)
+            sys.exit(1)
+    except Exception as e:
+        print(f"Error loading course config: {e}", file=sys.stderr)
+        sys.exit(1)
+    
+    prefix = f"{args.assignment}-stu"
+    
     print(f"🔍 正在查找仓库...")
     print(f"   Gitea: {args.gitea_url}")
-    print(f"   组织: {args.org}")
-    print(f"   前缀: {args.prefix}")
+    print(f"   组织: {org}")
+    print(f"   前缀: {prefix}")
     print()
     
     # 获取仓库列表
-    repos = list_repos(args.gitea_url, args.token, args.org, args.prefix)
+    repos = list_repos(args.gitea_url, args.token, org, prefix)
     
     if not repos:
         print("✅ 没有找到匹配的仓库")
@@ -161,7 +182,7 @@ def main():
         repo_name = repo["name"]
         print(f"删除 {repo_name}... ", end="", flush=True)
         
-        if delete_repo(args.gitea_url, args.token, args.org, repo_name):
+        if delete_repo(args.gitea_url, args.token, org, repo_name):
             success_count += 1
             print("✅ 成功")
         else:

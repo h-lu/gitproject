@@ -1,13 +1,17 @@
 # Python 编程作业自动评分 Workflow 模板
-# 
+#
 # 使用方法：
 # 1. 复制此文件到 .gitea/workflows/grade.yml
-# 2. 根据需要调整 Python 版本、依赖安装等
-# 3. 确保 problem.yaml 中配置了正确的测试目录
+# 2. 根据需要调整 Python 版本
+# 3. 确保项目有正确的 requirements.txt 和 pytest.ini
 
 name: autograde-python
 
-on: [pull_request]
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,58 +20,42 @@ permissions:
 jobs:
   python:
     runs-on: docker
-    container: python:3.11
-    timeout-minutes: 15
+    container:
+      image: python:3.11
+      options: --user root
+    timeout-minutes: 20
     
     steps:
       - name: Install git (CN mirror)
         run: |
           set -e
+          # 替换 Debian/Ubuntu 源为腾讯云镜像
           for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
             [ -f "$f" ] || continue
             sed -i -E 's|https?://deb.debian.org|http://mirrors.cloud.tencent.com|g' "$f" || true
             sed -i -E 's|https?://security.debian.org|http://mirrors.cloud.tencent.com/debian-security|g' "$f" || true
+            sed -i -E 's|https?://archive.ubuntu.com|http://mirrors.cloud.tencent.com|g' "$f" || true
+            sed -i -E 's|https?://ports.ubuntu.com|http://mirrors.cloud.tencent.com|g' "$f" || true
           done
-          apt-get update -y
+          apt-get -o Acquire::Check-Valid-Until=false -o Acquire::AllowInsecureRepositories=true update -y
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates
           rm -rf /var/lib/apt/lists/*
+          git --version
       
       - name: Checkout code
-        env:
-          TESTS_TOKEN: ${{ secrets.TESTS_TOKEN }}
-          EXTERNAL_GITEA_HOST: ${{ secrets.EXTERNAL_GITEA_HOST }}
-        working-directory: ${{ github.workspace }}
-        run: |
-          set -e
-          GITEA_HOST=$(echo "${{ github.server_url }}" | sed 's|https\?://||' | cut -d'/' -f1)
-          HOST="$GITEA_HOST"
-          if echo "$GITEA_HOST" | grep -qi '^gitea'; then
-            if [ -n "$EXTERNAL_GITEA_HOST" ]; then
-              HOST="$EXTERNAL_GITEA_HOST"
-            else
-              HOST="49.234.193.192:3000"
-            fi
-          fi
-          REPO="${{ github.repository }}"
-          REF="${{ github.sha }}"
-          
-          git init -q .
-          if [ -n "$TESTS_TOKEN" ]; then
-            REMOTE_URL="http://oauth2:${TESTS_TOKEN}@${HOST}/${REPO}.git"
-          else
-            REMOTE_URL="http://${HOST}/${REPO}.git"
-          fi
-          git remote add origin "$REMOTE_URL" || git remote set-url origin "$REMOTE_URL"
-          git fetch --depth=1 origin "$REF"
-          git checkout -q FETCH_HEAD
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
       
       - name: Install dependencies
         working-directory: ${{ github.workspace }}
         run: |
-          python -m pip install --upgrade pip
+          # 使用腾讯云镜像源加速
+          python -m pip install -U pip -i https://mirrors.cloud.tencent.com/pypi/simple
           if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
+            pip install -r requirements.txt -i https://mirrors.cloud.tencent.com/pypi/simple
           fi
+          pip install pytest pytest-json-report python-dotenv -i https://mirrors.cloud.tencent.com/pypi/simple
       
       - name: Fetch hidden tests (if available)
         env:
@@ -76,31 +64,35 @@ jobs:
         run: |
           if [ -z "$TESTS_TOKEN" ]; then
             echo "Warning: TESTS_TOKEN not set, skipping private tests"
-            mkdir -p tests
           else
             GITEA_HOST=$(echo "${{ github.server_url }}" | sed 's|https\?://||' | cut -d'/' -f1)
-            git clone https://oauth2:$TESTS_TOKEN@${GITEA_HOST}/course-test/hw1-tests.git _priv_tests || true
-            if [ -d "_priv_tests/python" ]; then
-              rsync -a _priv_tests/python/ tests/ || true
+            git clone https://oauth2:$TESTS_TOKEN@${GITEA_HOST}/course-test/python-hw1-tests.git _priv_tests || true
+            if [ -d "_priv_tests/tests" ]; then
+              cp -r _priv_tests/tests/* tests/ || true
             fi
           fi
       
-      - name: Run tests using universal test runner
+      - name: Run tests using pytest
         working-directory: ${{ github.workspace }}
         env:
           LANGUAGE: python
         run: |
-          export PYTHONHASHSEED=2025
-          python3 ./.autograde/run_tests.py \
-            --language python \
-            --test-dir tests_public \
-            --source-dir src \
-            --output-xml junit.xml || true
+          pytest --json-report --json-report-file=pytest-report.json || true
+      
+      - name: Extract test results
+        working-directory: ${{ github.workspace }}
+        run: |
+          if [ -f pytest-report.json ]; then
+            echo "✅ Pytest report generated"
+          else
+            echo "⚠️ No pytest-report.json found"
+            echo '{"tests":[],"summary":{"total":0,"passed":0,"failed":0}}' > pytest-report.json
+          fi
       
       - name: Grade
         working-directory: ${{ github.workspace }}
         run: |
-          python3 ./.autograde/grade.py --junit junit.xml --out grade.json --summary summary.md
+          python3 ./.autograde/grade.py --pytest pytest-report.json --out grade.json --summary summary.md
       
       - name: Create grade metadata
         working-directory: ${{ github.workspace }}
@@ -119,6 +111,23 @@ jobs:
           echo "✅ Grade metadata created"
           cat metadata.json
       
+      - name: Upload metadata (teacher only)
+        if: env.RUNNER_METADATA_REPO != '' && env.RUNNER_METADATA_TOKEN != ''
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          METADATA_REPO: ${{ env.RUNNER_METADATA_REPO }}
+          METADATA_TOKEN: ${{ env.RUNNER_METADATA_TOKEN }}
+          METADATA_BRANCH: ${{ env.RUNNER_METADATA_BRANCH }}
+        run: |
+          python3 ./.autograde/upload_metadata.py \
+            --metadata-repo "$METADATA_REPO" \
+            --token "$METADATA_TOKEN" \
+            --branch "$METADATA_BRANCH" \
+            --student-repo "${{ github.repository }}" \
+            --assignment-id "hw1" \
+            --file metadata.json
+      
       - name: Comment on PR
         env:
           GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -136,4 +145,3 @@ jobs:
           export GRADE_METADATA=$(cat metadata.json 2>/dev/null || echo "{}")
           
           python3 ./.autograde/post_comment.py
-

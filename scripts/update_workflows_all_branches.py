@@ -229,11 +229,14 @@ def update_workflow_in_branch(gitea_url, token, org, repo_name, branch, template
 
 def main():
     parser = argparse.ArgumentParser(description="Update workflow files in all branches of student repositories")
-    parser.add_argument("--prefix", default="hw1-stu", help="Repository name prefix")
-    parser.add_argument("--template-dir", required=True, help="Template repository directory")
+    
+    # Required arguments
+    parser.add_argument("--course", required=True, help="课程路径 (例如: courses/CS101)")
+    parser.add_argument("--assignment", required=True, help="作业ID (例如: hw1)")
+    
+    # Optional arguments
     parser.add_argument("--gitea-url", default=os.getenv("GITEA_URL", "http://localhost:3000"))
     parser.add_argument("--token", default=os.getenv("GITEA_ADMIN_TOKEN", ""))
-    parser.add_argument("--org", default=os.getenv("ORGANIZATION", "course-test"))
     parser.add_argument("--repo", help="Update specific repository only")
     parser.add_argument("--branch", help="Update specific branch only (requires --repo)")
     
@@ -243,7 +246,25 @@ def main():
         print("Error: GITEA_ADMIN_TOKEN not set", file=sys.stderr)
         sys.exit(1)
     
-    template_workflow_dir = os.path.join(args.template_dir, ".gitea", "workflows")
+    # Load course config
+    try:
+        import yaml
+        from pathlib import Path
+        course_config_path = Path(args.course) / "course_config.yaml"
+        with open(course_config_path) as f:
+            course_config = yaml.safe_load(f)
+        org = course_config.get("organization")
+        if not org:
+            print("Error: 'organization' not defined in course config", file=sys.stderr)
+            sys.exit(1)
+    except Exception as e:
+        print(f"Error loading course config: {e}", file=sys.stderr)
+        sys.exit(1)
+    
+    prefix = f"{args.assignment}-stu"
+    template_dir = str(Path(args.course) / "assignments" / args.assignment / "template")
+    
+    template_workflow_dir = os.path.join(template_dir, ".gitea", "workflows")
     if not os.path.isdir(template_workflow_dir):
         print(f"Error: Template workflow directory not found: {template_workflow_dir}", file=sys.stderr)
         sys.exit(1)
@@ -252,8 +273,8 @@ def main():
     if args.repo:
         repos = [args.repo]
     else:
-        print(f"🔍 Searching for repositories with prefix: {args.prefix}")
-        repos = get_repos(args.gitea_url, args.token, args.org, args.prefix)
+        print(f"🔍 Searching for repositories with prefix: {prefix}")
+        repos = get_repos(args.gitea_url, args.token, org, prefix)
         print(f"Found {len(repos)} repositories")
     
     success_count = 0
@@ -266,7 +287,7 @@ def main():
         if args.branch:
             branches = [args.branch]
         else:
-            branches = get_branches(args.gitea_url, args.token, args.org, repo_name)
+            branches = get_branches(args.gitea_url, args.token, org, repo_name)
             if not branches:
                 branches = ["main"]  # 默认分支
         
@@ -274,7 +295,7 @@ def main():
         
         for branch in branches:
             print(f"  📝 Updating branch: {branch}")
-            if update_workflow_in_branch(args.gitea_url, args.token, args.org, repo_name, branch, template_workflow_dir):
+            if update_workflow_in_branch(args.gitea_url, args.token, org, repo_name, branch, template_workflow_dir):
                 print(f"    ✅ Success")
                 success_count += 1
             else:
