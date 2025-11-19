@@ -15,16 +15,25 @@ from urllib.parse import urlparse
 
 
 def detect_host(server_url: str, external_host: str | None) -> str:
+    """Detect the Gitea host to use for API calls.
+    
+    If server_url uses internal name (like 'gitea'), use external_host instead.
+    """
     parsed = urlparse(server_url)
     raw_host = parsed.netloc or parsed.path.split("/")[0]
     host = raw_host
     if raw_host.lower().startswith("gitea"):
-        host = external_host or "49.234.193.192:3000"
+        if not external_host:
+            raise ValueError(
+                f"Server URL uses internal name '{raw_host}' but EXTERNAL_GITEA_HOST is not set. "
+                "Please configure EXTERNAL_GITEA_HOST in .env and run sync_runner_config.sh"
+            )
+        host = external_host
     return host
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Upload metadata.json to hw1-metadata repo")
+    parser = argparse.ArgumentParser(description="Upload metadata.json to course metadata repo")
     parser.add_argument("--metadata-file", required=True)
     parser.add_argument("--metadata-repo", required=True, help="owner/repo of metadata store")
     parser.add_argument("--branch", default="main")
@@ -34,6 +43,7 @@ def main() -> int:
     parser.add_argument("--workflow", required=True, choices=["grade", "objective", "llm"])
     parser.add_argument("--server-url", required=True)
     parser.add_argument("--external-host")
+    parser.add_argument("--assignment-id", help="Assignment ID (e.g., hw1)")
     args = parser.parse_args()
 
     token = os.environ.get("METADATA_TOKEN")
@@ -52,8 +62,26 @@ def main() -> int:
         print(f"Invalid metadata repo: {args.metadata_repo}", file=sys.stderr)
         return 1
 
-    student_safe = args.student_repo.replace("/", "__")
-    target_path = f"records/{student_safe}/{args.workflow}_{args.run_id}_{args.commit_sha[:7]}.json"
+    # Extract student ID from student repo name
+    # student repo format: hw1-stu_20250001 or hw1-stu_student1
+    student_id = args.student_repo.split("/")[-1]  # Get repo name
+    
+    # Auto-detect assignment ID from student repo if not provided
+    assignment_id = args.assignment_id
+    if not assignment_id:
+        # Try to extract from student_repo format: hw1-stu_xxx
+        repo_name_part = args.student_repo.split("/")[-1]
+        if "-stu_" in repo_name_part:
+            assignment_id = repo_name_part.split("-stu_")[0]
+        elif "-template" in repo_name_part:
+             assignment_id = repo_name_part.split("-template")[0]
+        elif "-tests" in repo_name_part:
+             assignment_id = repo_name_part.split("-tests")[0]
+        else:
+            assignment_id = "unknown"
+    
+    # New path structure: {assignment_id}/{student_id}/{workflow}_{run_id}_{sha}.json
+    target_path = f"{assignment_id}/{student_id}/{args.workflow}_{args.run_id}_{args.commit_sha[:7]}.json"
 
     host = detect_host(args.server_url, args.external_host)
     api_url = f"http://{host}/api/v1/repos/{owner}/{repo_name}/contents/{target_path}"

@@ -2,12 +2,16 @@
 #
 # 使用方法：
 # 1. 复制此文件到 .gitea/workflows/grade.yml
-# 2. 根据需要调整 JDK 版本、Maven 配置等
-# 3. 确保项目有正确的 pom.xml
+# 2. 根据需要调整 JDK 版本、Gradle 配置等
+# 3. 确保项目有正确的 build.gradle 或 pom.xml
 
 name: autograde-java
 
-on: [pull_request]
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,45 +20,36 @@ permissions:
 jobs:
   java:
     runs-on: docker
-    container: maven:3.9-eclipse-temurin-17
+    container:
+      image: gradle:9.0-jdk21
+      options: --user root
     timeout-minutes: 20
     
     steps:
-      - name: Install git
+      - name: Install dependencies (CN mirror)
         run: |
           set -e
-          apt-get update -y
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates rsync
+          # 替换 Debian/Ubuntu 源为腾讯云镜像
+          for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+            [ -f "$f" ] || continue
+            sed -i -E 's|https?://deb.debian.org|http://mirrors.cloud.tencent.com|g' "$f" || true
+            sed -i -E 's|https?://security.debian.org|http://mirrors.cloud.tencent.com/debian-security|g' "$f" || true
+            sed -i -E 's|https?://archive.ubuntu.com|http://mirrors.cloud.tencent.com|g' "$f" || true
+            sed -i -E 's|https?://ports.ubuntu.com|http://mirrors.cloud.tencent.com|g' "$f" || true
+          done
+          apt-get -o Acquire::Check-Valid-Until=false -o Acquire::AllowInsecureRepositories=true update -y
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates python3 python3-pip
+          pip3 install --break-system-packages python-dotenv -i https://mirrors.cloud.tencent.com/pypi/simple
           rm -rf /var/lib/apt/lists/*
       
       - name: Checkout code
-        env:
-          TESTS_TOKEN: ${{ secrets.TESTS_TOKEN }}
-          EXTERNAL_GITEA_HOST: ${{ secrets.EXTERNAL_GITEA_HOST }}
-        working-directory: ${{ github.workspace }}
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+      
+      - name: Fix permissions
         run: |
-          set -e
-          GITEA_HOST=$(echo "${{ github.server_url }}" | sed 's|https\?://||' | cut -d'/' -f1)
-          HOST="$GITEA_HOST"
-          if echo "$GITEA_HOST" | grep -qi '^gitea'; then
-            if [ -n "$EXTERNAL_GITEA_HOST" ]; then
-              HOST="$EXTERNAL_GITEA_HOST"
-            else
-              HOST="49.234.193.192:3000"
-            fi
-          fi
-          REPO="${{ github.repository }}"
-          REF="${{ github.sha }}"
-          
-          git init -q .
-          if [ -n "$TESTS_TOKEN" ]; then
-            REMOTE_URL="http://oauth2:${TESTS_TOKEN}@${HOST}/${REPO}.git"
-          else
-            REMOTE_URL="http://${HOST}/${REPO}.git"
-          fi
-          git remote add origin "$REMOTE_URL" || git remote set-url origin "$REMOTE_URL"
-          git fetch --depth=1 origin "$REF"
-          git checkout -q FETCH_HEAD
+          chown -R $(whoami):$(whoami) ${{ github.workspace }} || true
       
       - name: Fetch hidden tests (if available)
         env:
@@ -71,37 +66,30 @@ jobs:
             fi
           fi
       
-      - name: Run tests using Maven
+      - name: Run tests using Gradle
         working-directory: ${{ github.workspace }}
         env:
           LANGUAGE: java
         run: |
-          mvn clean test -B || true
+          gradle test --no-daemon || true
       
       - name: Extract test results
         working-directory: ${{ github.workspace }}
         run: |
-          # Maven 生成的 JUnit XML 在 target/surefire-reports/
-          if [ -d "target/surefire-reports" ]; then
-            # 找到第一个 TEST-*.xml 文件
-            JUNIT_FILE=$(find target/surefire-reports -name "TEST-*.xml" | head -1)
+          # Gradle JUnit XML in build/test-results/test/
+          if [ -d "build/test-results/test" ]; then
+            JUNIT_FILE=$(find build/test-results/test -name "TEST-*.xml" | head -1)
             if [ -n "$JUNIT_FILE" ]; then
               cp "$JUNIT_FILE" junit.xml
               echo "✅ JUnit XML extracted"
             else
-              echo "⚠️ No TEST-*.xml found in surefire-reports"
+              echo "⚠️ No TEST-*.xml found"
               echo '<?xml version="1.0"?><testsuites><testsuite name="empty" tests="0" failures="0" errors="0"></testsuite></testsuites>' > junit.xml
             fi
           else
-            echo "⚠️ No surefire-reports directory found"
+            echo "⚠️ No build/test-results/test directory found"
             echo '<?xml version="1.0"?><testsuites><testsuite name="empty" tests="0" failures="0" errors="0"></testsuite></testsuites>' > junit.xml
           fi
-      
-      - name: Install Python for grading
-        run: |
-          apt-get update -y
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 python3-pip
-          pip3 install --break-system-packages python-dotenv
       
       - name: Grade
         working-directory: ${{ github.workspace }}
@@ -111,7 +99,7 @@ jobs:
       - name: Create grade metadata
         working-directory: ${{ github.workspace }}
         env:
-          ASSIGNMENT_ID: java-hw1
+          ASSIGNMENT_ID: hw1
           REPO: ${{ github.repository }}
           LANGUAGE: java
         run: |
@@ -124,6 +112,22 @@ jobs:
           python3 ./.autograde/create_minimal_metadata.py > metadata.json || echo "{}" > metadata.json
           echo "✅ Grade metadata created"
           cat metadata.json
+      
+      - name: Upload metadata (teacher only)
+        if: env.RUNNER_METADATA_REPO != '' && env.RUNNER_METADATA_TOKEN != ''
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          METADATA_REPO: ${{ env.RUNNER_METADATA_REPO }}
+          METADATA_TOKEN: ${{ env.RUNNER_METADATA_TOKEN }}
+          METADATA_BRANCH: ${{ env.RUNNER_METADATA_BRANCH }}
+        run: |
+          python3 ./.autograde/upload_metadata.py \
+            --metadata-repo "$METADATA_REPO" \
+            --token "$METADATA_TOKEN" \
+            --branch "$METADATA_BRANCH" \
+            --student-repo "${{ github.repository }}" \
+            --file metadata.json
       
       - name: Comment on PR
         env:
@@ -142,4 +146,3 @@ jobs:
           export GRADE_METADATA=$(cat metadata.json 2>/dev/null || echo "{}")
           
           python3 ./.autograde/post_comment.py
-

@@ -1,12 +1,43 @@
 #!/bin/bash
-# 快速收集成绩脚本
+# 快速收集成绩脚本 - 多课程模式
 
-# 配置（使用环境变量或默认值）
-GITEA_URL="${GITEA_URL:-http://49.234.193.192:3000}"
-ORGANIZATION="${ORGANIZATION:-course-test}"
-PREFIX="${PREFIX:-hw1-}"
+# 显示用法
+usage() {
+    echo "用法: $0 -c <course> -a <assignment> [-o <output>]"
+    echo ""
+    echo "参数:"
+    echo "  -c  课程路径 (例如: courses/CS101)"
+    echo "  -a  作业ID (例如: hw1)"
+    echo "  -o  输出文件 (默认: grades_<assignment>_<timestamp>.csv)"
+    echo ""
+    echo "示例:"
+    echo "  $0 -c courses/CS101 -a hw1"
+    echo "  $0 -c courses/STAT202 -a hw2 -o stat_hw2_grades.csv"
+    exit 1
+}
 
-# 自动加载 .env（或通过 ENV_FILE 指定其他文件）
+# 解析参数
+COURSE=""
+ASSIGNMENT=""
+OUTPUT=""
+
+while getopts "c:a:o:h" opt; do
+  case $opt in
+    c) COURSE="$OPTARG" ;;
+    a) ASSIGNMENT="$OPTARG" ;;
+    o) OUTPUT="$OPTARG" ;;
+    h) usage ;;
+    *) usage ;;
+  esac
+done
+
+# 检查必需参数
+if [ -z "$COURSE" ] || [ -z "$ASSIGNMENT" ]; then
+    echo "❌ 错误: 必须指定 -c (course) 和 -a (assignment) 参数"
+    usage
+fi
+
+# 自动加载 .env（如果存在）
 ENV_FILE="${ENV_FILE:-.env}"
 if [ -f "$ENV_FILE" ]; then
     echo "♻️  加载环境变量：$ENV_FILE"
@@ -24,21 +55,21 @@ if [ -z "$GITEA_ADMIN_TOKEN" ]; then
 fi
 
 # 生成输出文件名（带时间戳）
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-OUTPUT="grades_${PREFIX}${TIMESTAMP}.csv"
+if [ -z "$OUTPUT" ]; then
+    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    OUTPUT="grades_${ASSIGNMENT}_${TIMESTAMP}.csv"
+fi
 
 echo "📊 开始收集成绩..."
-echo "   Gitea: $GITEA_URL"
-echo "   组织: $ORGANIZATION"
-echo "   前缀: $PREFIX"
+echo "   课程: $COURSE"
+echo "   作业: $ASSIGNMENT"
 echo "   输出: $OUTPUT"
 echo ""
 
 # 运行收集脚本
 python3 scripts/collect_grades.py \
-    --gitea-url "$GITEA_URL" \
-    --token "$GITEA_ADMIN_TOKEN" \
-    --prefix "$PREFIX" \
+    --course "$COURSE" \
+    --assignment "$ASSIGNMENT" \
     --output "$OUTPUT"
 
 if [ $? -eq 0 ]; then
@@ -48,7 +79,7 @@ if [ $? -eq 0 ]; then
     echo ""
     echo "📈 快速统计:"
     if [ -f "$OUTPUT" ] && command -v python3 &> /dev/null; then
-        python3 << PYTHON
+        python3 <<PYTHON
 import csv
 import sys
 import os

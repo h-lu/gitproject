@@ -1,167 +1,107 @@
-# 🤖 Gitea 自动评分系统
+# 🤖 Gitea Automated Grading System
 
-基于 Gitea Actions 的课程作业自动评分系统，支持多种编程语言（Python/Java/R）和 LLM 简答题评分。
+基于 Gitea Actions 的多课程自动评分系统，支持 Python、Java、R 和 LLM 评分。
 
-## ✨ 特性
+> **📌 重要提示**: 本系统已重构为多课程/多作业模式。每个课程和作业都通过 `courses/` 目录下的 YAML 配置文件管理。
 
-- 🌐 **多语言支持**: Python、Java、R 编程作业自动评分
-- 🤖 **智能评分**: 单元测试 + LLM 简答题评分
-- 🔒 **私有测试**: 隐藏测试用例，防止学生针对性优化
-- 📊 **成绩收集**: 一键批量收集所有学生成绩，统一 JSON 格式
-- 👥 **批量管理**: 自动化创建用户、仓库、配置权限
-- 💬 **自动反馈**: 评分结果自动评论到 Pull Request
-- 🎓 **模板系统**: 快速创建不同课程的作业模板
+## ✨ 主要特性
 
-## 🚀 快速开始
+- 🎓 **多课程支持**: 每个课程独立管理，拥有独立的 Gitea 组织
+- 📝 **多作业管理**: 每个课程可以有多个作业，配置独立
+- 🤖 **自动评分**: 基于 Gitea Actions 的 CI/CD 评分流水线
+- 🧪 **多语言支持**: Python、Java、R
+- 💬 **LLM 评分**: 支持使用大语言模型评分简答题
+- 📊 **成绩收集**: 自动收集所有学生成绩到 CSV
 
-### 1. 检查和配置系统
+## 📚 文档
+
+完整文档位于 `docs/` 目录：
+
+-   **[👉 快速开始](docs/GETTING_STARTED.md)**: 系统配置和运行第一个课程
+-   **[🎓 教师指南](docs/INSTRUCTOR_GUIDE.md)**: 管理课程和作业
+-   **[📖 学生指南](docs/STUDENT_GUIDE.md)**: 学生提交作业流程
+
+## 🚀 快速开始 (多课程示例)
 
 ```bash
-# 运行配置检查脚本
-./check_config.sh
+# 1. 启动服务
+docker-compose up -d
+
+# 2. 配置环境变量
+cp .env.example .env
+# 编辑 .env 设置 GITEA_URL、GITEA_ADMIN_TOKEN 等
+
+# 2.5 同步 Runner 配置
+./scripts/sync_runner_config.sh
+docker-compose restart runner
+
+# 3. 创建课程
+mkdir -p courses/CS101
+# 创建课程配置和学生列表（参考文档）
+
+# 4. 生成学生仓库
+python3 scripts/generate_repos.py --course courses/CS101 --assignment hw1
+
+# 5. 收集成绩
+python3 scripts/collect_grades.py --course courses/CS101 --assignment hw1 --output grades.csv
 ```
 
-### 2. 阅读文档
+详细步骤请参考 [快速开始指南](docs/GETTING_STARTED.md)。
 
-📚 **所有文档都在 `docs/` 目录下**，推荐从这里开始：
-
-**[👉 docs/ENV_SETUP_GUIDE.md](docs/ENV_SETUP_GUIDE.md)** - 环境配置和使用指南
-
-## 📚 完整文档
-
-| 文档 | 说明 |
-|------|------|
-| [docs/ENV_SETUP_GUIDE.md](docs/ENV_SETUP_GUIDE.md) | 🔧 **环境配置和快速开始**（推荐从这里开始） |
-| [docs/GITEA_ACTIONS_SECRETS.md](docs/GITEA_ACTIONS_SECRETS.md) | 🔐 **批量配置 Actions Secrets**（自动化配置 TESTS_USERNAME / TESTS_TOKEN） |
-| [docs/TOKEN_PERMISSIONS_GUIDE.md](docs/TOKEN_PERMISSIONS_GUIDE.md) | 🎫 Gitea API Token 权限配置指南 |
-| [docs/COURSE_TEMPLATE_GUIDE.md](docs/COURSE_TEMPLATE_GUIDE.md) | 🎓 创建新课程模板（Java/R/Python） |
-| [docs/SCRIPTS_INDEX.md](docs/SCRIPTS_INDEX.md) | 🛠️ 所有脚本的详细说明和使用方法 |
-| [docs/GRADING_METADATA_SPEC.md](docs/GRADING_METADATA_SPEC.md) | 📊 成绩 JSON 格式规范 |
-| [docs/MULTILANG_SUMMARY.md](docs/MULTILANG_SUMMARY.md) | 🌐 多语言评分系统实现总结 |
-| [docs/README.md](docs/README.md) | 📖 详细的系统说明文档 |
-
-## 📂 项目结构
+## 📁 项目结构
 
 ```
 GitProject/
-├── docs/                       # 📚 所有文档
-│   ├── README.md              # 详细系统说明
-│   ├── ENV_SETUP_GUIDE.md     # 配置和使用指南 ⭐
-│   ├── COURSE_TEMPLATE_GUIDE.md
-│   ├── SCRIPTS_INDEX.md
-│   ├── GRADING_METADATA_SPEC.md
-│   └── MULTILANG_SUMMARY.md
-│
-├── scripts/                    # 🛠️ 管理脚本
-│   ├── create_course_template.py
-│   ├── generate_repos.py
-│   ├── add_collaborators.sh
-│   ├── collect_grades.py
-│   ├── quick_collect.sh
-│   └── update_workflows_all_branches.py
-│
-├── hw1-template/              # 📦 作业模板（Python + LLM）
-│   ├── .gitea/workflows/      # CI/CD 配置
-│   ├── .autograde/            # 评分脚本
-│   ├── examples/              # Java 和 R 示例
-│   ├── src/                   # Python 源代码
-│   └── tests_public/          # 公开测试
-│
-├── hw1-tests/                 # 🔒 隐藏测试仓库
-│   └── python/                # Python 隐藏测试
-│
-└── check_config.sh            # 配置检查脚本
+├── courses/                    # 课程目录
+│   └── CS101/                 # 课程 ID
+│       ├── course_config.yaml # 课程配置
+│       ├── students.txt       # 学生名单
+│       └── assignments/       # 作业目录
+│           └── hw1/           # 作业 ID
+│               ├── config.yaml    # 作业配置
+│               ├── template/      # 学生起始代码
+│               └── tests/         # 私有测试
+├── scripts/                   # 管理脚本
+│   ├── generate_repos.py     # 生成学生仓库
+│   ├── collect_grades.py     # 收集成绩
+│   ├── create_users.py       # 批量创建用户
+│   ├── delete_repos.py       # 删除仓库
+│   ├── sync_runner_config.sh # 同步 .env 到 Runner 配置
+│   └── ...                   # 其他工具脚本
+├── docs/                      # 文档
+├── docker-compose.yml         # Docker 配置
+└── .env.example              # 环境变量模板
 ```
 
-## 🎯 使用流程
+## 🔑 核心概念
 
-1. **配置检查**: 运行 `./check_config.sh`
-2. **阅读文档**: 查看 [docs/ENV_SETUP_GUIDE.md](docs/ENV_SETUP_GUIDE.md)
-3. **配置环境变量**: 在 shell 中导出 `GITEA_URL`、`GITEA_ADMIN_TOKEN`、`ORGANIZATION` 等变量
-4. **推送模板**: 将 `hw1-template` 和 `hw1-tests` 推送到 Gitea
-5. **生成仓库**: 运行 `python3 scripts/generate_repos.py`
-6. **添加协作者**: 运行 `./scripts/add_collaborators.sh`
-7. **学生提交 & 自动评分**: 学生直接 push 到自己的 `hwX-stu_xxx` 仓库，workflow（`on: push`）会自动克隆私有测试并生成评分；教师需要手动重跑时，可使用 workflow dispatch。
-8. **收集成绩**: 运行 `./scripts/quick_collect.sh`
+### 多课程架构
 
-> **Runner 环境变量**：由于学生无权读取仓库 Secrets，需要在 `act_runner` 服务（或 docker-compose runner 容器）中配置
-> `RUNNER_TESTS_USERNAME` / `RUNNER_TESTS_TOKEN`，以便 workflow 拉取 `hwX-tests`。具体做法见 `docs/WORKFLOW_TOKEN_FIX.md`。
+- **课程 (Course)**: 每个课程有独立的 Gitea 组织（如 `CS101-2025Fall`）
+- **作业 (Assignment)**: 每个作业有独立的模板仓库、测试仓库和学生仓库
+- **配置文件**: 使用 YAML 文件管理课程和作业元数据
+- **自动命名**: 仓库名自动根据作业 ID 生成（如 `hw1-template`, `hw1-tests`, `hw1-stu_student1`）
 
-## 🆘 获取帮助
+### 工作流程
 
-- **配置问题**: 查看 [docs/ENV_SETUP_GUIDE.md](docs/ENV_SETUP_GUIDE.md) 的"常见问题"部分
-- **脚本使用**: 查看 [docs/SCRIPTS_INDEX.md](docs/SCRIPTS_INDEX.md)
-- **创建新课程**: 查看 [docs/COURSE_TEMPLATE_GUIDE.md](docs/COURSE_TEMPLATE_GUIDE.md)
-- **运行检查**: 执行 `./check_config.sh` 自动诊断
+1. **教师**: 创建课程和作业配置 → 运行生成脚本 → 学生仓库自动创建
+2. **学生**: 克隆仓库 → 完成作业 → 推送代码 → 自动评分
+3. **教师**: 运行收集脚本 → 获取所有学生成绩
 
-## 📊 系统状态
+## 🛠️ 技术栈
 
-运行配置检查：
-```bash
-./check_config.sh
-```
+- **Gitea**: Git 仓库托管和 Gitea Actions CI/CD
+- **Docker**: 容器化部署
+- **Python**: 管理脚本和评分逻辑
+- **PostgreSQL**: Gitea 数据库
 
-这会检查：
-- ✅ Gitea 服务器连接
-- ✅ API Token 有效性
-- ✅ `hw1-template` 和 `hw1-tests` 完整性
-- ✅ 管理脚本
-- ✅ Python 依赖
+## 📖 更多信息
 
-## 🌟 核心特性详解
+- [教师指南](docs/INSTRUCTOR_GUIDE.md) - 如何管理课程和作业
+- [学生指南](docs/STUDENT_GUIDE.md) - 如何提交作业
+- [开发者指南](docs/DEVELOPER_GUIDE.md) - 系统架构和故障排除
+- [脚本文档](scripts/README.md) - 所有脚本的详细使用说明
 
-### 多语言支持
-
-系统支持为不同编程语言创建课程模板：
-
-```bash
-# 创建 Java 课程
-python3 scripts/create_course_template.py \
-  --name java-ds-hw1 \
-  --language java \
-  --title "数据结构（Java）" \
-  --output java-ds-hw1-template
-
-# 创建 R 课程
-python3 scripts/create_course_template.py \
-  --name stats-r-hw1 \
-  --language r \
-  --title "统计学与R语言" \
-  --output stats-r-hw1-template
-```
-
-### 环境变量配置
-
-使用以下环境变量控制脚本行为（可写入 shell profile，或在执行命令前 `export`）：
-
-```bash
-export GITEA_URL=http://49.234.193.192:3000
-export GITEA_ADMIN_TOKEN=your_token
-export ORGANIZATION=course-test
-export TEMPLATE_REPO=hw1-template
-export PREFIX=hw1-stu_
-```
-
-### 自动化工作流
-
-学生提交 PR 后，系统自动：
-1. 运行测试（公开 + 隐藏）
-2. 计算分数（含迟交扣分）
-3. LLM 评分简答题
-4. 生成 JSON 元数据
-5. 发布评论到 PR
-
-## 📄 许可证
+## 📄 License
 
 MIT License
-
-## 🙏 致谢
-
-- [Gitea](https://gitea.io/) - 开源 Git 服务
-- [Gitea Actions](https://docs.gitea.io/en-us/usage/actions/overview/) - CI/CD 系统
-- [act_runner](https://gitea.com/gitea/act_runner) - Actions Runner
-
----
-
-**开始使用**: 阅读 [docs/ENV_SETUP_GUIDE.md](docs/ENV_SETUP_GUIDE.md) 📖
-

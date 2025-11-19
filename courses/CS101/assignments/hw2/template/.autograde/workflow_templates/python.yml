@@ -125,7 +125,6 @@ jobs:
             --token "$METADATA_TOKEN" \
             --branch "$METADATA_BRANCH" \
             --student-repo "${{ github.repository }}" \
-            --assignment-id "hw1" \
             --file metadata.json
       
       - name: Comment on PR

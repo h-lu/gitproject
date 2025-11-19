@@ -34,19 +34,16 @@ jobs:
       - name: Manual checkout (local Gitea)
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          EXTERNAL_GITEA_HOST: ${{ secrets.EXTERNAL_GITEA_HOST }}
         working-directory: ${{ github.workspace }}
         run: |
           set -e
-          GITEA_HOST=$(echo "${{ github.server_url }}" | sed 's|https\?://||' | cut -d'/' -f1)
-          HOST="$GITEA_HOST"
-          # 如果主机是内部名 gitea，则改用外部主机
-          if echo "$GITEA_HOST" | grep -qi '^gitea'; then
-            if [ -n "$EXTERNAL_GITEA_HOST" ]; then
-              HOST="$EXTERNAL_GITEA_HOST"
-            else
-              HOST="49.234.193.192:3000"
-            fi
+          # Resolve Gitea Host
+          if [ -n "$EXTERNAL_GITEA_HOST" ]; then
+            HOST="$EXTERNAL_GITEA_HOST"
+          elif [ -n "$GITEA_ROOT_URL" ]; then
+            HOST=$(echo "$GITEA_ROOT_URL" | sed 's|https\?://||' | sed 's|/$||')
+          else
+            HOST=$(echo "${{ github.server_url }}" | sed 's|https\?://||' | cut -d'/' -f1)
           fi
           REPO="${{ github.repository }}"
           REF="${{ github.sha }}"
@@ -89,15 +86,16 @@ jobs:
             exit 1
           fi
 
-          GITEA_HOST=$(echo "${{ github.server_url }}" | sed 's|https\?://||' | cut -d'/' -f1)
-          HOST="$GITEA_HOST"
-          if echo "$GITEA_HOST" | grep -qi '^gitea'; then
-            if [ -n "$EXTERNAL_GITEA_HOST" ]; then
-              HOST="$EXTERNAL_GITEA_HOST"
-            else
-              HOST="49.234.193.192:3000"
-            fi
+          # Resolve Gitea Host
+          if [ -n "$EXTERNAL_GITEA_HOST" ]; then
+            HOST="$EXTERNAL_GITEA_HOST"
+          elif [ -n "$GITEA_ROOT_URL" ]; then
+            HOST=$(echo "$GITEA_ROOT_URL" | sed 's|https\?://||' | sed 's|/$||')
+          else
+            HOST=$(echo "${{ github.server_url }}" | sed 's|https\?://||' | cut -d'/' -f1)
           fi
+          
+          echo "Using Gitea Host: $HOST"
 
           echo "📥 Fetching rubric from hw1-tests repository..."
           echo "  Gitea host: $GITEA_HOST (using: $HOST)"
@@ -106,7 +104,8 @@ jobs:
 
           echo "::add-mask::$TESTS_TOKEN"
           echo "::add-mask::$TESTS_USERNAME"
-          AUTH_URL="http://${TESTS_USERNAME}:${TESTS_TOKEN}@${HOST}/course-test/hw1-tests.git"
+          ORG=$(echo "${{ github.repository }}" | cut -d'/' -f1)
+          AUTH_URL="http://${TESTS_USERNAME}:${TESTS_TOKEN}@${HOST}/${ORG}/hw1-tests.git"
           if ! git -c http.sslVerify=false clone --depth=1 "$AUTH_URL" _priv_tests 2>/dev/null; then
             echo "❌ Failed to clone hw1-tests repository!"
             exit 1
@@ -152,10 +151,6 @@ jobs:
           fi
       
       - name: Grade SA1 (LLM)
-        env:
-          LLM_API_URL: ${{ secrets.LLM_API_URL }}
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-          LLM_MODEL: ${{ secrets.LLM_MODEL }}
         working-directory: ${{ github.workspace }}
         run: |
           # 确保在正确的工作目录
@@ -200,10 +195,6 @@ jobs:
             --summary artifacts/sa1_summary.md || echo "SA1 grading failed"
       
       - name: Grade SA2 (LLM)
-        env:
-          LLM_API_URL: ${{ secrets.LLM_API_URL }}
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-          LLM_MODEL: ${{ secrets.LLM_MODEL }}
         working-directory: ${{ github.workspace }}
         run: |
           # 确保在正确的工作目录
@@ -231,10 +222,6 @@ jobs:
             --summary artifacts/sa2_summary.md || echo "SA2 grading failed"
       
       - name: Grade SA3 (LLM)
-        env:
-          LLM_API_URL: ${{ secrets.LLM_API_URL }}
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-          LLM_MODEL: ${{ secrets.LLM_MODEL }}
         working-directory: ${{ github.workspace }}
         run: |
           # 确保在正确的工作目录
@@ -318,6 +305,7 @@ jobs:
             echo "{}" > metadata.json
           fi
       
+
       - name: Upload metadata (teacher only)
         if: env.RUNNER_METADATA_REPO != '' && env.RUNNER_METADATA_TOKEN != ''
         working-directory: ${{ github.workspace }}
@@ -330,7 +318,6 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           COMMIT_SHA: ${{ github.sha }}
           SERVER_URL: ${{ github.server_url }}
-          EXTERNAL_GITEA_HOST: ${{ secrets.EXTERNAL_GITEA_HOST }}
         run: |
           set -e
           if [ ! -f metadata.json ]; then

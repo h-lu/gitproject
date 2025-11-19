@@ -31,13 +31,19 @@ def extract_student_id():
     return None
 
 
+if __name__ == "__main__":
+    main()
+
+
+def extract_assignment_id():
+
 def create_grade_metadata(grade_file='grade.json'):
     """从 grade.json 创建元数据，包含所有详细信息"""
     try:
         with open(grade_file, 'r') as f:
             grade_data = json.load(f)
         
-        assignment_id = os.getenv("ASSIGNMENT_ID", "hw1")
+        assignment_id = extract_assignment_id()
         student_id = extract_student_id()
         language = os.getenv("LANGUAGE", "python")
         
@@ -101,7 +107,7 @@ def create_llm_metadata(llm_grade_file='artifacts/llm_grade.json'):
         with open(llm_grade_file, 'r') as f:
             llm_data = json.load(f)
         
-        assignment_id = os.getenv("ASSIGNMENT_ID", "hw1")
+        assignment_id = extract_assignment_id()
         student_id = extract_student_id()
         
         # 提取聚合后的信息
@@ -175,7 +181,7 @@ def create_objective_metadata(objective_file='objective_grade.json'):
         with open(objective_file, 'r', encoding='utf-8') as f:
             objective_data = json.load(f)
 
-        assignment_id = os.getenv("ASSIGNMENT_ID", "hw1")
+        assignment_id = extract_assignment_id()
         student_id = extract_student_id()
 
         total_score = objective_data.get("score", 0)
@@ -255,4 +261,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 

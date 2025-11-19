@@ -3,7 +3,7 @@ services:
     image: postgres:14
     environment:
       POSTGRES_USER: gitea
-      POSTGRES_PASSWORD: Wshhwps000
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gitea}
       POSTGRES_DB: gitea
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
@@ -24,9 +24,9 @@ services:
       - GITEA__database__HOST=db:5432
       - GITEA__database__NAME=gitea
       - GITEA__database__USER=gitea
-      - GITEA__database__PASSWD=Wshhwps000
-      - GITEA__server__DOMAIN=49.234.193.192
-      - GITEA__server__ROOT_URL=http://49.234.193.192:3000/
+      - GITEA__database__PASSWD=${POSTGRES_PASSWORD:-gitea}
+      - GITEA__server__DOMAIN=${GITEA_DOMAIN:-localhost}
+      - GITEA__server__ROOT_URL=${GITEA_ROOT_URL:-http://localhost:3000/}
       - GITEA__actions__ENABLED=true
     volumes:
       - ./data/gitea:/data
@@ -43,17 +43,24 @@ services:
       - gitea
     environment:
       GITEA_INSTANCE_URL: http://gitea:3000
-      RUNNER_REGISTRATION_TOKEN: ZgfOJ7kfqBmPrIXV2H1j1g8yNS8J6LRyL77OEvlu
+      GITEA_RUNNER_REGISTRATION_TOKEN: ${RUNNER_REGISTRATION_TOKEN}
       DOCKER_HOST: unix:///var/run/docker.sock
       CONFIG_FILE: /data/config.yaml
-      RUNNER_TESTS_USERNAME: hblu
-      RUNNER_TESTS_TOKEN: 5653fe143df7a487c433e43cd0e69495779127b8
-      RUNNER_METADATA_REPO: course-test/hw1-metadata
-      RUNNER_METADATA_TOKEN: 5653fe143df7a487c433e43cd0e69495779127b8
-      RUNNER_METADATA_BRANCH: main
+      EXTERNAL_GITEA_HOST: ${EXTERNAL_GITEA_HOST}
+      RUNNER_TESTS_USERNAME: ${RUNNER_TESTS_USERNAME}
+      RUNNER_TESTS_TOKEN: ${RUNNER_TESTS_TOKEN}
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_API_URL: ${LLM_API_URL}
+      LLM_MODEL: ${LLM_MODEL}
+      # Optional: metadata repository for grade collection
+      # RUNNER_METADATA_REPO: ${RUNNER_METADATA_REPO}
+      # RUNNER_METADATA_TOKEN: ${RUNNER_METADATA_TOKEN}
+      # RUNNER_METADATA_BRANCH: ${RUNNER_METADATA_BRANCH:-main}
     volumes:
       - ./data/runner:/data
+      - ./.env:/data/.env
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
+
 
 
