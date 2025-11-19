@@ -1,0 +1,8 @@
+assignment_id: hw2
+title: "Homework 2: Java Programming"
+description: "Introduction to Java and Gradle"
+due_date: "2025-11-30 23:59:59"
+total_score: 100
+grading:
+  enable_llm: true
+  enable_tests: true
