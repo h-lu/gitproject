@@ -1,0 +1,241 @@
+name: 客观题评分
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    paths:
+      - 'objective_answers/**'
+      - '.gitea/workflows/objective_grade.yml'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  grade-objective:
+    runs-on: docker
+    container: python:3.11
+    timeout-minutes: 10
+    
+    steps:
+      - name: Install git (CN mirror)
+        run: |
+          set -e
+          # 替换 Debian/Ubuntu 源为腾讯云镜像（同时覆盖 deb822 与 *.list）
+          for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+            [ -f "$f" ] || continue
+            sed -i -E 's|https?://deb.debian.org|http://mirrors.cloud.tencent.com|g' "$f" || true
+            sed -i -E 's|https?://security.debian.org|http://mirrors.cloud.tencent.com/debian-security|g' "$f" || true
+            sed -i -E 's|https?://archive.ubuntu.com|http://mirrors.cloud.tencent.com|g' "$f" || true
+            sed -i -E 's|https?://ports.ubuntu.com|http://mirrors.cloud.tencent.com|g' "$f" || true
+          done
+          apt-get -o Acquire::Check-Valid-Until=false -o Acquire::AllowInsecureRepositories=true update -y
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates rsync
+          rm -rf /var/lib/apt/lists/*
+          git --version
+      
+      - name: Manual checkout (local Gitea)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          EXTERNAL_GITEA_HOST: ${{ secrets.EXTERNAL_GITEA_HOST }}
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -e
+          GITEA_HOST=$(echo "${{ github.server_url }}" | sed 's|https\?://||' | cut -d'/' -f1)
+          HOST="$GITEA_HOST"
+          if echo "$GITEA_HOST" | grep -qi '^gitea'; then
+            if [ -n "$EXTERNAL_GITEA_HOST" ]; then
+              HOST="$EXTERNAL_GITEA_HOST"
+            else
+              HOST="49.234.193.192:3000"
+            fi
+          fi
+          REPO="${{ github.repository }}"
+          REF="${{ github.sha }}"
+          echo "Gitea host: $GITEA_HOST (using: $HOST)"
+          echo "Repo: $REPO"
+          echo "Ref: $REF"
+          
+          git init -q .
+          # 使用 GITHUB_TOKEN (由 Gitea Actions 自动提供) 来访问当前仓库
+          if [ -n "$GITHUB_TOKEN" ]; then
+            REMOTE_URL="http://oauth2:${GITHUB_TOKEN}@${HOST}/${REPO}.git"
+          else
+            REMOTE_URL="http://${HOST}/${REPO}.git"
+          fi
+          git remote add origin "$REMOTE_URL" || git remote set-url origin "$REMOTE_URL"
+          git -c advice.detachedHead=false -c http.sslVerify=false fetch --depth=1 origin "$REF"
+          git checkout -q --detach FETCH_HEAD
+          git submodule update --init --depth 1 || true
+      
+      - name: Install dependencies
+        working-directory: ${{ github.workspace }}
+        run: |
+          # 使用腾讯云镜像源加速
+          python -m pip install -U pip -i https://mirrors.cloud.tencent.com/pypi/simple
+      
+      - name: Fetch standard answers (from private tests repo)
+        working-directory: ${{ github.workspace }}
+        env:
+          EXTERNAL_GITEA_HOST: ${{ secrets.EXTERNAL_GITEA_HOST }}
+        run: |
+          set -e
+
+          TESTS_USERNAME="${RUNNER_TESTS_USERNAME:-}"
+          TESTS_TOKEN="${RUNNER_TESTS_TOKEN:-}"
+
+          # 确保 _grade_data 目录存在（用于存放私有评分数据）
+          mkdir -p _grade_data
+          
+          # 检查 Runner 级凭据是否已设置
+          if [ -z "$TESTS_TOKEN" ] || [ -z "$TESTS_USERNAME" ]; then
+            echo "❌ RUNNER_TESTS_USERNAME / RUNNER_TESTS_TOKEN 未配置!"
+            echo "标准答案必须从私有的 hw1-tests 仓库获取"
+            echo "请在 act_runner 服务（或 docker-compose runner 容器）中设置 RUNNER_TESTS_USERNAME / RUNNER_TESTS_TOKEN"
+            exit 1
+          fi
+          
+          # 获取 Gitea 主机地址
+          GITEA_HOST=$(echo "${{ github.server_url }}" | sed 's|https\?://||' | cut -d'/' -f1)
+          HOST="$GITEA_HOST"
+          if echo "$GITEA_HOST" | grep -qi '^gitea'; then
+            if [ -n "$EXTERNAL_GITEA_HOST" ]; then
+              HOST="$EXTERNAL_GITEA_HOST"
+            else
+              HOST="49.234.193.192:3000"
+            fi
+          fi
+          
+          echo "📥 Fetching standard answers from hw1-tests repo..."
+          echo "  Gitea host: $GITEA_HOST (using: $HOST)"
+          echo "  🔐 TESTS_USERNAME length: ${#TESTS_USERNAME}"
+          echo "  🔐 TESTS_TOKEN length: ${#TESTS_TOKEN}"
+          
+          # 克隆私有测试仓库（通过 URL Basic Auth，先隐藏敏感信息）
+          echo "::add-mask::$TESTS_TOKEN"
+          echo "::add-mask::$TESTS_USERNAME"
+          AUTH_URL="http://${TESTS_USERNAME}:${TESTS_TOKEN}@${HOST}/course-test/hw1-tests.git"
+          if ! git -c http.sslVerify=false clone --depth=1 "$AUTH_URL" _priv_tests 2>&1; then
+            echo "❌ Failed to clone hw1-tests repository!"
+            echo "请检查:"
+            echo "  • TESTS_TOKEN / TESTS_USERNAME 是否正确"
+            echo "  • TESTS_TOKEN 是否有 read:repository 权限"
+            echo "  • course-test/hw1-tests 仓库是否存在"
+            exit 1
+          fi
+          
+          # 验证标准答案文件存在
+          if [ ! -f "_priv_tests/objective/standard_answers.json" ]; then
+            echo "❌ standard_answers.json not found in hw1-tests!"
+            echo "请检查 course-test/hw1-tests/objective/standard_answers.json 是否存在"
+            exit 1
+          fi
+          
+          # 复制到临时位置
+          cp _priv_tests/objective/standard_answers.json _grade_data/standard_answers.json
+          echo "✅ Standard answers fetched successfully"
+      
+      - name: Grade objective questions
+        id: grade
+        working-directory: ${{ github.workspace }}
+        run: |
+          # 查找学生答案文件
+          if [ -f "objective_answers/my_answers.json" ]; then
+            ANSWER_FILE="objective_answers/my_answers.json"
+          elif [ -f "objective_answers/my_answers.txt" ]; then
+            ANSWER_FILE="objective_answers/my_answers.txt"
+          else
+            echo "❌ 未找到答案文件！"
+            echo "请在 objective_answers/ 目录下创建 my_answers.json 或 my_answers.txt"
+            exit 1
+          fi
+          
+          # 运行评分脚本
+          python3 ./.autograde/objective_grade.py \
+            --answers "$ANSWER_FILE" \
+            --standard _grade_data/standard_answers.json \
+            --out objective_grade.json \
+            --summary objective_summary.md \
+            --type all
+          
+          # 显示结果
+          echo "=== 评分结果 ==="
+          cat objective_summary.md
+          
+          # 保存分数用于后续步骤
+          SCORE=$(python3 -c "import json; data=json.load(open('objective_grade.json')); print(data['score'])")
+          MAX_SCORE=$(python3 -c "import json; data=json.load(open('objective_grade.json')); print(data['max_score'])")
+          echo "score=$SCORE" >> $GITHUB_OUTPUT
+          echo "max_score=$MAX_SCORE" >> $GITHUB_OUTPUT
+      
+      - name: Create metadata
+        id: metadata
+        working-directory: ${{ github.workspace }}
+        env:
+          ASSIGNMENT_ID: hw1
+          STUDENT_ID: ${{ secrets.STUDENT_ID }}
+          REPO: ${{ github.repository }}
+          GRADE_TYPE: objective
+          GRADE_FILE: objective_grade.json
+        run: |
+          if [ ! -f objective_grade.json ]; then
+            echo "⚠️ objective_grade.json not found, skipping metadata creation"
+            echo "{}" > metadata.json
+            exit 0
+          fi
+          
+          # 使用通用的元数据生成脚本
+          if [ -f ./.autograde/create_minimal_metadata.py ]; then
+            export GRADE_TYPE="${GRADE_TYPE:-objective}"
+            export GRADE_FILE="${GRADE_FILE:-objective_grade.json}"
+            python3 ./.autograde/create_minimal_metadata.py > metadata.json || echo "{}" > metadata.json
+            echo "✅ Grade metadata created"
+          else
+            echo "⚠️ create_minimal_metadata.py not found, skipping metadata creation"
+            echo "{}" > metadata.json
+          fi
+      
+      - name: Upload metadata (teacher only)
+        if: env.RUNNER_METADATA_REPO != '' && env.RUNNER_METADATA_TOKEN != ''
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          METADATA_REPO: ${{ env.RUNNER_METADATA_REPO }}
+          METADATA_TOKEN: ${{ env.RUNNER_METADATA_TOKEN }}
+          METADATA_BRANCH: ${{ env.RUNNER_METADATA_BRANCH }}
+          STUDENT_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          COMMIT_SHA: ${{ github.sha }}
+          SERVER_URL: ${{ github.server_url }}
+          EXTERNAL_GITEA_HOST: ${{ secrets.EXTERNAL_GITEA_HOST }}
+        run: |
+          set -e
+          if [ ! -f metadata.json ]; then
+            echo "No metadata.json found, skip uploading."
+            exit 0
+          fi
+
+          python ./.autograde/upload_metadata.py \
+            --metadata-file metadata.json \
+            --metadata-repo "${METADATA_REPO}" \
+            --branch "${METADATA_BRANCH:-main}" \
+            --student-repo "${STUDENT_REPO}" \
+            --run-id "${RUN_ID}" \
+            --commit-sha "${COMMIT_SHA}" \
+            --workflow objective \
+            --server-url "${SERVER_URL}" \
+            --external-host "${EXTERNAL_GITEA_HOST}"
+          rm -f metadata.json
+      
+      - name: Prepare artifacts
+        if: always()
+        working-directory: ${{ github.workspace }}
+        run: |
+          mkdir -p artifacts
+          cp objective_grade.json objective_summary.md artifacts/ 2>/dev/null || true
+          echo "✅ Artifacts prepared:"
+          ls -lh artifacts/
+
+

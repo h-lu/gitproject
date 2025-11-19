@@ -1,0 +1,49 @@
+# R 语言基础统计函数作业配置示例
+
+assignment:
+  id: r-example-stats
+  title: 基础统计函数实现
+  language: r
+  type: programming
+
+description: |
+  实现基本的统计函数：均值、方差、标准化。
+  这是一个展示 R 语言作业配置的示例。
+
+language_config:
+  test_framework: testthat
+  test_command: Rscript -e "testthat::test_dir('tests/testthat')"
+  dependencies_file: DESCRIPTION
+  source_dir: R
+  test_dir: tests/testthat
+
+grading:
+  max_score: 100
+  components:
+    - name: calculate_mean
+      weight: 30
+      description: 均值计算
+      tests: tests/testthat/test_basic_stats.R::test_that:calculate_mean
+    
+    - name: calculate_variance
+      weight: 40
+      description: 方差计算
+      tests: tests/testthat/test_basic_stats.R::test_that:calculate_variance
+    
+    - name: standardize
+      weight: 30
+      description: 标准化函数
+      tests: tests/testthat/test_basic_stats.R::test_that:standardize
+
+constraints:
+  - 不允许使用 mean(), var(), scale() 等内置函数
+  - 需要自己实现所有计算逻辑
+  - 必须处理边界情况（空向量、单元素等）
+
+resources:
+  timeout: 60
+  mem: 256m
+
+example_workflow: |
+  使用 .autograde/workflow_templates/r.yml 作为 workflow 模板
+
