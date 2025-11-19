@@ -1,0 +1,18 @@
+{
+  "mc_questions": {
+    "1": "B",
+    "2": "C"
+  },
+  "tf_questions": {
+    "1": false,
+    "2": true
+  },
+  "fb_questions": {},
+  "ms_questions": {},
+  "max_scores": {
+    "mc_questions": 10,
+    "tf_questions": 10,
+    "fb_questions": 0,
+    "ms_questions": 0
+  }
+}

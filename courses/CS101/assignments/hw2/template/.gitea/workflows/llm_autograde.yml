@@ -1,0 +1,340 @@
+name: llm-autograde
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  llm-grade:
+    runs-on: docker
+    container: python:3.11
+    
+    steps:
+      - name: Install git (CN mirror)
+        run: |
+          set -e
+          # 替换 Debian/Ubuntu 源为腾讯云镜像（同时覆盖 deb822 与 *.list）
+          for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+            [ -f "$f" ] || continue
+            sed -i -E 's|https?://deb.debian.org|http://mirrors.cloud.tencent.com|g' "$f" || true
+            sed -i -E 's|https?://security.debian.org|http://mirrors.cloud.tencent.com/debian-security|g' "$f" || true
+            sed -i -E 's|https?://archive.ubuntu.com|http://mirrors.cloud.tencent.com|g' "$f" || true
+            sed -i -E 's|https?://ports.ubuntu.com|http://mirrors.cloud.tencent.com|g' "$f" || true
+          done
+          apt-get -o Acquire::Check-Valid-Until=false -o Acquire::AllowInsecureRepositories=true update -y
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates
+          rm -rf /var/lib/apt/lists/*
+          git --version
+      - name: Manual checkout (local Gitea)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -e
+          # Resolve Gitea Host
+          if [ -n "$EXTERNAL_GITEA_HOST" ]; then
+            HOST="$EXTERNAL_GITEA_HOST"
+          elif [ -n "$GITEA_ROOT_URL" ]; then
+            HOST=$(echo "$GITEA_ROOT_URL" | sed 's|https\?://||' | sed 's|/$||')
+          else
+            HOST=$(echo "${{ github.server_url }}" | sed 's|https\?://||' | cut -d'/' -f1)
+          fi
+          REPO="${{ github.repository }}"
+          REF="${{ github.sha }}"
+          echo "Gitea host: $GITEA_HOST (using: $HOST)"
+          echo "Repo: $REPO"
+          echo "Ref: $REF"
+          
+          git init -q .
+          # 使用 GITHUB_TOKEN (由 Gitea Actions 自动提供) 来访问当前仓库
+          if [ -n "$GITHUB_TOKEN" ]; then
+            REMOTE_URL="http://oauth2:${GITHUB_TOKEN}@${HOST}/${REPO}.git"
+          else
+            REMOTE_URL="http://${HOST}/${REPO}.git"
+          fi
+          git remote add origin "$REMOTE_URL" || git remote set-url origin "$REMOTE_URL"
+          git -c advice.detachedHead=false -c http.sslVerify=false fetch --depth=1 origin "$REF"
+          git checkout -q --detach FETCH_HEAD
+          git submodule update --init --depth 1 || true
+      
+      - name: Install deps
+        working-directory: ${{ github.workspace }}
+        run: |
+          # 使用腾讯云镜像源加速
+          pip install requests python-dotenv -i https://mirrors.cloud.tencent.com/pypi/simple
+      
+      - name: Fetch LLM rubric (private tests repo)
+        working-directory: ${{ github.workspace }}
+        env:
+          EXTERNAL_GITEA_HOST: ${{ secrets.EXTERNAL_GITEA_HOST }}
+        run: |
+          set -e
+
+          TESTS_USERNAME="${RUNNER_TESTS_USERNAME:-}"
+          TESTS_TOKEN="${RUNNER_TESTS_TOKEN:-}"
+
+          if [ -z "$TESTS_TOKEN" ] || [ -z "$TESTS_USERNAME" ]; then
+            echo "❌ RUNNER_TESTS_USERNAME / RUNNER_TESTS_TOKEN 未配置!"
+            echo "Rubric 必须从私有的 hw2-tests 仓库获取"
+            echo "请在 act_runner 服务中设置 RUNNER_TESTS_USERNAME / RUNNER_TESTS_TOKEN"
+            exit 1
+          fi
+
+          # Resolve Gitea Host
+          if [ -n "$EXTERNAL_GITEA_HOST" ]; then
+            HOST="$EXTERNAL_GITEA_HOST"
+          elif [ -n "$GITEA_ROOT_URL" ]; then
+            HOST=$(echo "$GITEA_ROOT_URL" | sed 's|https\?://||' | sed 's|/$||')
+          else
+            HOST=$(echo "${{ github.server_url }}" | sed 's|https\?://||' | cut -d'/' -f1)
+          fi
+          
+          echo "Using Gitea Host: $HOST"
+
+          echo "📥 Fetching rubric from hw2-tests repository..."
+          echo "  Gitea host: $GITEA_HOST (using: $HOST)"
+          echo "  🔐 TESTS_USERNAME length: ${#TESTS_USERNAME}"
+          echo "  🔐 TESTS_TOKEN length: ${#TESTS_TOKEN}"
+
+          echo "::add-mask::$TESTS_TOKEN"
+          echo "::add-mask::$TESTS_USERNAME"
+          ORG=$(echo "${{ github.repository }}" | cut -d'/' -f1)
+          AUTH_URL="http://${TESTS_USERNAME}:${TESTS_TOKEN}@${HOST}/${ORG}/hw2-tests.git"
+          if ! git -c http.sslVerify=false clone --depth=1 "$AUTH_URL" _priv_tests 2>/dev/null; then
+            echo "❌ Failed to clone hw2-tests repository!"
+            exit 1
+          fi
+
+          if [ ! -f "_priv_tests/llm/rubric.json" ]; then
+            echo "❌ _priv_tests/llm/rubric.json 未找到，请确认 hw2-tests 仓库中存在该文件"
+            exit 1
+          fi
+
+          cp _priv_tests/llm/rubric.json ./.autograde/rubric.json
+          echo "✅ Rubric copied to ./.autograde/rubric.json"
+          rm -rf _priv_tests
+      
+      - name: Check files exist
+        working-directory: ${{ github.workspace }}
+        run: |
+          echo "=== Environment Info ==="
+          echo "PWD: $(pwd)"
+          echo "GITHUB_WORKSPACE: ${GITHUB_WORKSPACE:-not set}"
+          echo ""
+          echo "=== Root directory ==="
+          ls -la / || true
+          echo ""
+          echo "=== Current directory contents ==="
+          ls -la . || true
+          echo ""
+          echo "=== Looking for .autograde ==="
+          find . -name ".autograde" -type d 2>/dev/null || echo "Not found in current dir"
+          find /workspace -name ".autograde" -type d 2>/dev/null | head -5 || echo "Not found in /workspace"
+          echo ""
+          echo "=== All .autograde files ==="
+          find . -path "*/.autograde/*" -type f 2>/dev/null | head -10 || echo "No .autograde files found"
+          echo ""
+          echo "=== Try to access .autograde ==="
+          if [ -d ".autograde" ]; then
+            echo "✅ .autograde directory exists"
+            ls -la .autograde/
+          else
+            echo "❌ .autograde directory NOT found in current directory"
+            echo "Trying to find it..."
+            cd /workspace/*/hw1-001 2>/dev/null && pwd && ls -la .autograde/ 2>/dev/null || echo "Still not found"
+          fi
+      
+      - name: Grade SA1 (LLM)
+        working-directory: ${{ github.workspace }}
+        run: |
+          # 确保在正确的工作目录
+          WORKSPACE="${GITHUB_WORKSPACE:-/workspace/${{ github.repository_owner }}/${{ github.event.repository.name }}}"
+          if [ ! -d "$WORKSPACE" ]; then
+            WORKSPACE="/workspace/${{ github.repository_owner }}/${{ github.event.repository.name }}"
+          fi
+          if [ ! -d "$WORKSPACE" ]; then
+            WORKSPACE=$(find /workspace -name "${{ github.event.repository.name }}" -type d 2>/dev/null | head -1)
+          fi
+          if [ -d "$WORKSPACE" ]; then
+            cd "$WORKSPACE"
+            echo "Changed to workspace: $(pwd)"
+          fi
+          
+          mkdir -p artifacts
+          
+          # 查找 llm_grade.py
+          LLM_SCRIPT=""
+          if [ -f "./.autograde/llm_grade.py" ]; then
+            LLM_SCRIPT="./.autograde/llm_grade.py"
+          elif [ -f ".autograde/llm_grade.py" ]; then
+            LLM_SCRIPT=".autograde/llm_grade.py"
+          else
+            LLM_SCRIPT=$(find . -name "llm_grade.py" -type f 2>/dev/null | head -1)
+          fi
+          
+          if [ -z "$LLM_SCRIPT" ] || [ ! -f "$LLM_SCRIPT" ]; then
+            echo "Error: llm_grade.py not found!"
+            echo "Current dir: $(pwd)"
+            echo "Looking for .autograde:"
+            find . -name ".autograde" -type d 2>/dev/null
+            exit 1
+          fi
+          
+          echo "Using script: $LLM_SCRIPT"
+          python "$LLM_SCRIPT" \
+            --question questions/sa1.md \
+            --answer answers/sa1.md \
+            --rubric ./.autograde/rubric.json \
+            --out artifacts/sa1_grade.json \
+            --summary artifacts/sa1_summary.md || echo "SA1 grading failed"
+      
+      - name: Grade SA2 (LLM)
+        working-directory: ${{ github.workspace }}
+        run: |
+          # 确保在正确的工作目录
+          WORKSPACE="${GITHUB_WORKSPACE:-/workspace/${{ github.repository_owner }}/${{ github.event.repository.name }}}"
+          if [ ! -d "$WORKSPACE" ]; then
+            WORKSPACE="/workspace/${{ github.repository_owner }}/${{ github.event.repository.name }}"
+          fi
+          if [ ! -d "$WORKSPACE" ]; then
+            WORKSPACE=$(find /workspace -name "${{ github.event.repository.name }}" -type d 2>/dev/null | head -1)
+          fi
+          if [ -d "$WORKSPACE" ]; then
+            cd "$WORKSPACE"
+          fi
+          
+          LLM_SCRIPT=$(find . -name "llm_grade.py" -type f 2>/dev/null | head -1)
+          if [ -z "$LLM_SCRIPT" ]; then
+            LLM_SCRIPT="./.autograde/llm_grade.py"
+          fi
+          
+          python "$LLM_SCRIPT" \
+            --question questions/sa2.md \
+            --answer answers/sa2.md \
+            --rubric ./.autograde/rubric.json \
+            --out artifacts/sa2_grade.json \
+            --summary artifacts/sa2_summary.md || echo "SA2 grading failed"
+      
+      - name: Grade SA3 (LLM)
+        working-directory: ${{ github.workspace }}
+        run: |
+          # 确保在正确的工作目录
+          WORKSPACE="${GITHUB_WORKSPACE:-/workspace/${{ github.repository_owner }}/${{ github.event.repository.name }}}"
+          if [ ! -d "$WORKSPACE" ]; then
+            WORKSPACE="/workspace/${{ github.repository_owner }}/${{ github.event.repository.name }}"
+          fi
+          if [ ! -d "$WORKSPACE" ]; then
+            WORKSPACE=$(find /workspace -name "${{ github.event.repository.name }}" -type d 2>/dev/null | head -1)
+          fi
+          if [ -d "$WORKSPACE" ]; then
+            cd "$WORKSPACE"
+          fi
+          
+          LLM_SCRIPT=$(find . -name "llm_grade.py" -type f 2>/dev/null | head -1)
+          if [ -z "$LLM_SCRIPT" ]; then
+            LLM_SCRIPT="./.autograde/llm_grade.py"
+          fi
+          
+          python "$LLM_SCRIPT" \
+            --question questions/sa3.md \
+            --answer answers/sa3.md \
+            --rubric ./.autograde/rubric.json \
+            --out artifacts/sa3_grade.json \
+            --summary artifacts/sa3_summary.md || echo "SA3 grading failed"
+      
+      - name: Aggregate LLM grades
+        working-directory: ${{ github.workspace }}
+        run: |
+          # 确保在正确的工作目录
+          WORKSPACE="${GITHUB_WORKSPACE:-/workspace/${{ github.repository_owner }}/${{ github.event.repository.name }}}"
+          if [ ! -d "$WORKSPACE" ]; then
+            WORKSPACE="/workspace/${{ github.repository_owner }}/${{ github.event.repository.name }}"
+          fi
+          if [ ! -d "$WORKSPACE" ]; then
+            WORKSPACE=$(find /workspace -name "${{ github.event.repository.name }}" -type d 2>/dev/null | head -1)
+          fi
+          if [ -d "$WORKSPACE" ]; then
+            cd "$WORKSPACE"
+          fi
+          
+          AGG_SCRIPT=$(find . -name "aggregate_llm_grades.py" -type f 2>/dev/null | head -1)
+          if [ -z "$AGG_SCRIPT" ]; then
+            AGG_SCRIPT="./.autograde/aggregate_llm_grades.py"
+          fi
+          
+          python "$AGG_SCRIPT" \
+            --inputs artifacts/sa1_grade.json artifacts/sa2_grade.json artifacts/sa3_grade.json \
+            --out artifacts/llm_grade.json \
+            --summary artifacts/llm_summary.md || echo "Aggregation failed"
+      
+      - name: Prepare artifacts
+        working-directory: ${{ github.workspace }}
+        run: |
+          echo "✅ Artifacts prepared:"
+          ls -lh artifacts/ || true
+      
+      - name: Create LLM grade metadata
+        working-directory: ${{ github.workspace }}
+        env:
+          ASSIGNMENT_ID: hw2
+          REPO: ${{ github.repository }}
+        run: |
+          if [ ! -f artifacts/llm_grade.json ]; then
+            echo "⚠️ llm_grade.json not found, skipping metadata creation"
+            exit 0
+          fi
+          
+          # 生成 JSON 元数据
+          if [ -f ./.autograde/create_grade_metadata.py ]; then
+            # 复制 llm_grade.json 到当前目录，供 create_grade_metadata.py 使用
+            cp artifacts/llm_grade.json llm_grade.json || true
+            python3 ./.autograde/create_grade_metadata.py > metadata.json || echo "{}" > metadata.json
+            echo "✅ LLM grade metadata created (using create_grade_metadata.py)"
+          elif [ -f ./.autograde/create_minimal_metadata.py ]; then
+            export GRADE_TYPE=llm
+            python3 ./.autograde/create_minimal_metadata.py > metadata.json || echo "{}" > metadata.json
+            echo "✅ LLM grade metadata created (using create_minimal_metadata.py)"
+          else
+            echo "⚠️ No metadata creation script found, skipping"
+            echo "{}" > metadata.json
+          fi
+      
+
+      - name: Upload metadata (teacher only)
+        if: env.RUNNER_METADATA_REPO != '' && env.RUNNER_METADATA_TOKEN != ''
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          METADATA_REPO: ${{ env.RUNNER_METADATA_REPO }}
+          METADATA_TOKEN: ${{ env.RUNNER_METADATA_TOKEN }}
+          METADATA_BRANCH: ${{ env.RUNNER_METADATA_BRANCH }}
+          STUDENT_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          COMMIT_SHA: ${{ github.sha }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -e
+          if [ ! -f metadata.json ]; then
+            echo "No metadata.json found, skip uploading."
+            exit 0
+          fi
+
+          python ./.autograde/upload_metadata.py \
+            --metadata-file metadata.json \
+            --metadata-repo "${METADATA_REPO}" \
+            --branch "${METADATA_BRANCH:-main}" \
+            --student-repo "${STUDENT_REPO}" \
+            --run-id "${RUN_ID}" \
+            --commit-sha "${COMMIT_SHA}" \
+            --workflow llm \
+            --server-url "${SERVER_URL}" \
+            --external-host "${EXTERNAL_GITEA_HOST}"
+          rm -f metadata.json
+      
+
