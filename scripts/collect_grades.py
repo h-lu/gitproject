@@ -3,15 +3,18 @@
 成绩收集器
 
 从 metadata 仓库中收集所有学生的成绩，生成汇总 CSV
+支持多课程/多作业模式
 """
 
 import os
 import sys
+from typing import Optional
 import argparse
 import requests
 import csv
 import json
 import base64
+import yaml
 from pathlib import Path
 from dotenv import load_dotenv
 from datetime import datetime
@@ -21,7 +24,14 @@ from urllib.parse import urlparse
 load_dotenv()
 
 
-def detect_host(server_url: str, external_host: str | None) -> str:
+def load_course_config(course_dir):
+    config_path = Path(course_dir) / "course_config.yaml"
+    if not config_path.exists():
+        raise FileNotFoundError(f"Course config not found: {config_path}")
+    with open(config_path, 'r') as f:
+        return yaml.safe_load(f)
+
+def detect_host(server_url: str, external_host: Optional[str]) -> str:
     """检测 Gitea 主机地址"""
     parsed = urlparse(server_url)
     raw_host = parsed.netloc or parsed.path.split("/")[0]
@@ -34,24 +44,6 @@ def detect_host(server_url: str, external_host: str | None) -> str:
 def list_metadata_files(gitea_url, token, metadata_repo, branch="main", path="records"):
     """
     列出 metadata 仓库中指定路径下的所有文件
-    
-    Parameters
-    ----------
-    gitea_url : str
-        Gitea 服务器 URL
-    token : str
-        Gitea API Token
-    metadata_repo : str
-        metadata 仓库名称（格式：owner/repo）
-    branch : str
-        分支名称
-    path : str
-        要列出的路径
-    
-    Returns
-    -------
-    list
-        文件信息列表，每个元素包含 path, sha, type 等
     """
     try:
         owner, repo_name = metadata_repo.split("/", 1)
@@ -113,24 +105,6 @@ def list_metadata_files(gitea_url, token, metadata_repo, branch="main", path="re
 def download_metadata_file(gitea_url, token, metadata_repo, file_path, branch="main"):
     """
     下载并解析 metadata JSON 文件
-    
-    Parameters
-    ----------
-    gitea_url : str
-        Gitea 服务器 URL
-    token : str
-        Gitea API Token
-    metadata_repo : str
-        metadata 仓库名称（格式：owner/repo）
-    file_path : str
-        文件路径
-    branch : str
-        分支名称
-    
-    Returns
-    -------
-    dict or None
-        解析后的 metadata JSON，如果失败则返回 None
     """
     try:
         owner, repo_name = metadata_repo.split("/", 1)
@@ -174,35 +148,31 @@ def download_metadata_file(gitea_url, token, metadata_repo, file_path, branch="m
 def extract_student_repo_from_path(file_path):
     """
     从文件路径提取学生仓库名称
-    
-    路径格式：records/{org}__{repo}/{workflow}_{run_id}_{commit_sha}.json
-    例如：records/course-test__hw1-stu_sit001/grade_123_abc1234.json
-    
-    Returns
-    -------
-    tuple
-        (student_repo, workflow_type) 或 (None, None)
+    Path format: {assignment_id}/{student_repo}/{filename}
     """
     try:
-        # 移除 records/ 前缀
+        # 移除 records/ 前缀 (兼容旧格式)
         if file_path.startswith("records/"):
             file_path = file_path[8:]
+            parts = file_path.split("/")
+            if len(parts) >= 2:
+                student_safe = parts[0]
+                filename = parts[1]
+                return student_safe.replace("__", "/"), filename.split("_")[0]
         
-        # 分割路径
+        # 新格式: hw1/hw1-stu_20250001/grade_...json
         parts = file_path.split("/")
-        if len(parts) < 2:
-            return None, None
-        
-        student_safe = parts[0]  # course-test__hw1-stu_sit001
-        filename = parts[1]  # grade_123_abc1234.json
-        
-        # 恢复学生仓库名称
-        student_repo = student_safe.replace("__", "/")
-        
-        # 提取 workflow 类型（文件名第一部分）
-        workflow_type = filename.split("_")[0]
-        
-        return student_repo, workflow_type
+        if len(parts) >= 3:
+            # parts[0] is assignment_id (e.g. hw1)
+            student_repo = parts[1]  # hw1-stu_20250001
+            filename = parts[-1]     # grade_...json
+            
+            # 提取 workflow 类型（文件名第一部分）
+            workflow_type = filename.split("_")[0]
+            
+            return student_repo, workflow_type
+            
+        return None, None
     except Exception as e:
         print(f"Error extracting student repo from path {file_path}: {e}", file=sys.stderr)
         return None, None
@@ -211,16 +181,6 @@ def extract_student_repo_from_path(file_path):
 def merge_components(components_list):
     """
     合并多个 metadata 的 components，按 type 去重（保留最新的）
-    
-    Parameters
-    ----------
-    components_list : list
-        多个 components 列表的列表
-    
-    Returns
-    -------
-    list
-        合并后的 components
     """
     component_dict = {}  # {type: component}
     
@@ -237,14 +197,20 @@ def merge_components(components_list):
 
 def main():
     parser = argparse.ArgumentParser(description="Collect grades from metadata repository")
+    
+    # Required arguments
+    parser.add_argument("--course", required=True, help="Path to course directory (e.g., courses/CS101)")
+    parser.add_argument("--assignment", required=True, help="Assignment ID (e.g., hw1)")
+    
     parser.add_argument("--output", default="grades.csv", help="Output CSV file")
-    parser.add_argument("--metadata-repo", default=os.getenv("METADATA_REPO", "course-test/hw1-metadata"), 
-                       help="Metadata repository (owner/repo)")
+    
+    # Optional/Override arguments
+    parser.add_argument("--metadata-repo", help="Metadata repository (owner/repo) - auto-inferred if not specified")
     parser.add_argument("--metadata-branch", default=os.getenv("METADATA_BRANCH", "main"),
                        help="Metadata repository branch")
     parser.add_argument("--gitea-url", default=os.getenv("GITEA_URL", "http://localhost:3000"))
     parser.add_argument("--token", default=os.getenv("GITEA_ADMIN_TOKEN", ""))
-    parser.add_argument("--prefix", default="hw1-stu", help="Student repository name prefix (for filtering)")
+    parser.add_argument("--prefix", help="Student repository name prefix (for filtering) - auto-inferred if not specified")
     
     args = parser.parse_args()
     
@@ -253,17 +219,32 @@ def main():
         print("Hint: Set it via --token or GITEA_ADMIN_TOKEN environment variable", file=sys.stderr)
         sys.exit(1)
     
-    print(f"📦 Collecting grades from metadata repository: {args.metadata_repo}")
+    print(f"Collecting grades: {args.course} / {args.assignment}")
+    course_config = load_course_config(args.course)
+    org = course_config.get("organization")
+    if not org:
+        print("Error: 'organization' not defined in course config", file=sys.stderr)
+        sys.exit(1)
+        
+    # Infer metadata repo and prefix
+    # Default to course-metadata, but allow override
+    metadata_repo = args.metadata_repo or f"{org}/course-metadata"
+    repo_prefix = args.prefix or f"{args.assignment}-stu"
+
+    print(f"📦 Collecting grades from metadata repository: {metadata_repo}")
     print(f"   Branch: {args.metadata_branch}")
     print(f"   Gitea URL: {args.gitea_url}")
+    print(f"   Prefix Filter: {repo_prefix}")
+    print(f"   Path: {args.assignment}/")
     
     # 列出所有 metadata 文件
     print("\n🔍 Scanning metadata files...")
     metadata_files = list_metadata_files(
         args.gitea_url, 
         args.token, 
-        args.metadata_repo,
-        args.metadata_branch
+        metadata_repo,
+        args.metadata_branch,
+        path=args.assignment
     )
     
     print(f"   Found {len(metadata_files)} metadata files")
@@ -299,17 +280,17 @@ def main():
             continue
         
         # 过滤：只处理匹配前缀的学生仓库
-        if args.prefix and not student_repo.endswith(args.prefix.split("_")[0] + "_"):
-            # 检查仓库名是否包含前缀（例如 hw1-stu_sit001）
+        if repo_prefix and not student_repo.endswith(repo_prefix.split("_")[0] + "_"):
+            # 检查仓库名是否包含前缀
             repo_name = student_repo.split("/")[-1] if "/" in student_repo else student_repo
-            if not repo_name.startswith(args.prefix):
+            if not repo_name.startswith(repo_prefix):
                 continue
         
         # 下载并解析 metadata
         metadata = download_metadata_file(
             args.gitea_url,
             args.token,
-            args.metadata_repo,
+            metadata_repo,
             file_path,
             args.metadata_branch
         )
@@ -324,8 +305,8 @@ def main():
         if not student_id:
             # 从仓库名提取
             repo_name = student_repo.split("/")[-1] if "/" in student_repo else student_repo
-            if repo_name.startswith(args.prefix):
-                student_id = repo_name[len(args.prefix) + 1:]
+            if repo_name.startswith(repo_prefix):
+                student_id = repo_name[len(repo_prefix) + 1:]
             else:
                 student_id = repo_name
         
