@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """
-快速验证是否能够通过 GITEA_TESTS_USERNAME / GITEA_TESTS_TOKEN 访问私有 hw1-tests 仓库。
+快速验证是否能够通过 GITEA_TESTS_USERNAME / GITEA_TESTS_TOKEN 访问私有测试仓库。
 
 Usage:
-  python3 scripts/test_private_repo_access.py
+  # 多课程模式
+  python3 scripts/test_private_repo_access.py --course courses/CS101 --assignment hw1
+  
+  # 或指定仓库
+  python3 scripts/test_private_repo_access.py --org course-test --repo hw1-tests
 
 提示：只有在 `push` / `workflow_dispatch` 事件中，Gitea 才会把这些 Secrets 注入 workflow，
 因此在 PR 中若看到长度为 8 的 `********` 属于正常安全限制。
@@ -11,6 +15,7 @@ Usage:
 
 import os
 import sys
+import argparse
 import subprocess
 from urllib.parse import urlparse
 
@@ -27,15 +32,47 @@ def build_auth_url(base_url: str, org: str, repo: str, username: str, token: str
 
 
 def main() -> int:
-    base_url = os.getenv("GITEA_URL", "http://49.234.193.192:3000")
-    org = (
-        os.getenv("GITEA_ORG")
-        or os.getenv("ORGANIZATION")
-        or "course-test"
-    )
-    repo = os.getenv("TESTS_REPO", "hw1-tests")
+    parser = argparse.ArgumentParser(description="Test private repository access")
+    
+    # 模式1: 多课程模式
+    parser.add_argument("--course", help="课程路径 (例如: courses/CS101)")
+    parser.add_argument("--assignment", help="作业 ID (例如: hw1)")
+    
+    # 模式2: 直接指定
+    parser.add_argument("--org", help="组织名")
+    parser.add_argument("--repo", help="仓库名")
+    
+    args = parser.parse_args()
+    
+    base_url = os.getenv("GITEA_URL") or os.getenv("EXTERNAL_GITEA_HOST", "http://localhost:3000")
     username = os.getenv("GITEA_TESTS_USERNAME")
     token = os.getenv("GITEA_TESTS_TOKEN")
+    
+    # 确定组织和仓库
+    if args.course and args.assignment:
+        # 多课程模式：从配置读取
+        try:
+            import yaml
+            from pathlib import Path
+            course_config_path = Path(args.course) / "course_config.yaml"
+            with open(course_config_path) as f:
+                course_config = yaml.safe_load(f)
+            org = course_config.get("organization")
+            if not org:
+                print("❌ 错误: 'organization' 未在课程配置中定义", file=sys.stderr)
+                return 1
+            repo = f"{args.assignment}-tests"
+        except Exception as e:
+            print(f"❌ 错误: 无法加载课程配置: {e}", file=sys.stderr)
+            return 1
+    elif args.org and args.repo:
+        # 直接模式
+        org = args.org
+        repo = args.repo
+    else:
+        print("❌ 错误: 请指定 --course/--assignment 或 --org/--repo", file=sys.stderr)
+        parser.print_help()
+        return 1
 
     missing = [name for name, value in [
         ("GITEA_TESTS_USERNAME", username),

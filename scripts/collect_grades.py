@@ -37,7 +37,7 @@ def detect_host(server_url: str, external_host: Optional[str]) -> str:
     raw_host = parsed.netloc or parsed.path.split("/")[0]
     host = raw_host
     if raw_host.lower().startswith("gitea"):
-        host = external_host or "49.234.193.192:3000"
+        host = external_host or "localhost:3000"
     return host
 
 
