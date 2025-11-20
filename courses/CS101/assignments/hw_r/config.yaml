@@ -1,0 +1,7 @@
+title: "Homework R: R Programming and Data Analysis"
+deadline: "2025-12-15T23:59:59"
+language: "r"
+grading:
+  enable_llm: true
+  enable_tests: true
+  enable_objective: true
