@@ -103,19 +103,26 @@ def ensure_repo_exists(gitea_url, token, org, repo_name, source_dir, is_private=
     # Push content
     if source_dir and Path(source_dir).exists():
         print(f"Pushing content from {source_dir}...")
-        # We need to initialize a git repo in source_dir (if not exists) or use a temp dir
-        # Ideally source_dir is just files. We'll init a temp git there? 
-        # Or better: git init, add remote, push.
-        # But we don't want to mess up the local directory if it's already a git repo (unlikely for 'template' dir inside courses?)
-        # Actually 'courses/CS101/assignments/hw1/template' is just files.
         
-        # Let's assume source_dir is a clean directory of files.
-        # We will run git commands inside it.
+        # Copy autograde scripts from scripts/autograde to template/.autograde
+        project_root = Path(__file__).parent.parent
+        autograde_source = project_root / "scripts" / "autograde"
+        autograde_dest = Path(source_dir) / ".autograde"
+        
+        if autograde_source.exists():
+            print(f"  Copying autograde scripts to {autograde_dest}...")
+            autograde_dest.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(autograde_source, autograde_dest, dirs_exist_ok=True)
+            print(f"  ✅ Autograde scripts copied")
+        else:
+            print(f"  ⚠️  Warning: Autograde scripts not found at {autograde_source}")
+        
+        # Initialize git repo if needed
         git_dir = Path(source_dir) / ".git"
         if git_dir.exists():
-             # If it's already a git repo, just push? 
-             # But we want to push to the NEW remote.
-             pass
+             # If it's already a git repo, we need to commit the new autograde files
+             run_git_cmd("git add .autograde", cwd=source_dir)
+             run_git_cmd("git commit -m 'Add autograde scripts' || true", cwd=source_dir)
         else:
             run_git_cmd("git init", cwd=source_dir)
             run_git_cmd("git add .", cwd=source_dir)
