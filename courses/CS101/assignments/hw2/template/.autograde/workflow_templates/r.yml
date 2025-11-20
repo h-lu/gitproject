@@ -1,10 +1,3 @@
-# R 编程作业自动评分 Workflow 模板
-#
-# 使用方法：
-# 1. 复制此文件到 .gitea/workflows/grade.yml
-# 2. 根据需要调整 R 版本  
-# 3. 确保项目有正确的 DESCRIPTION 和 testthat 测试
-
 name: autograde-r
 
 on:
@@ -18,15 +11,13 @@ permissions:
   pull-requests: write
 
 jobs:
-  r-lang:
+  r:
     runs-on: docker
-    container:
-      image: r-base:4.3.1
-      options: --user root
-    timeout-minutes: 20
+    container: r-base:4.3.1
+    timeout-minutes: 15
     
     steps:
-      - name: Install system dependencies (CN mirror)
+      - name: Install dependencies (CN mirror)
         run: |
           set -e
           # 替换 Debian/Ubuntu 源为腾讯云镜像
@@ -38,81 +29,144 @@ jobs:
             sed -i -E 's|https?://ports.ubuntu.com|http://mirrors.cloud.tencent.com|g' "$f" || true
           done
           apt-get -o Acquire::Check-Valid-Until=false -o Acquire::AllowInsecureRepositories=true update -y
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            git ca-certificates libcurl4-openssl-dev libssl-dev libxml2-dev python3 python3-pip nodejs rsync nodejs rsync
-          pip3 install --break-system-packages python-dotenv -i https://mirrors.cloud.tencent.com/pypi/simple || \
-            pip3 install python-dotenv -i https://mirrors.cloud.tencent.com/pypi/simple
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates python3 python3-pip nodejs rsync libcurl4-openssl-dev libssl-dev libxml2-dev
+          pip3 install --break-system-packages python-dotenv requests -i https://mirrors.cloud.tencent.com/pypi/simple
           rm -rf /var/lib/apt/lists/*
+      
+      - name: Configure CRAN Mirror
+        run: |
+          echo 'options(repos = c(CRAN = "https://mirrors.tuna.tsinghua.edu.cn/CRAN/"))' >> ~/.Rprofile
+      
+      - name: Install R packages
+        run: |
+          Rscript -e 'install.packages(c("testthat", "covr", "xml2"))'
       
       - name: Checkout code
         uses: actions/checkout@v3
         with:
           fetch-depth: 1
       
-      - name: Configure R CRAN mirror
+      - name: Fix permissions
         run: |
-          # 使用清华大学 CRAN 镜像加速
-          echo 'options(repos=c(CRAN="https://mirrors.tuna.tsinghua.edu.cn/CRAN/"))' > ~/.Rprofile
-          cat ~/.Rprofile
-      
-      - name: Install R packages
+          # Ensure workspace is owned by current user
+          chown -R $(whoami):$(whoami) ${{ github.workspace }} || true
+
+      - name: Fetch private tests
         working-directory: ${{ github.workspace }}
-        run: |
-          Rscript -e 'install.packages(c("testthat", "devtools", "jsonlite"), dependencies=TRUE)'
-      
-      - name: Fetch hidden tests (if available)
         env:
-          TESTS_TOKEN: ${{ secrets.TESTS_TOKEN }}
+          EXTERNAL_GITEA_HOST: ${{ secrets.EXTERNAL_GITEA_HOST }}
+        run: |
+          set -e
+
+          TESTS_USERNAME="${RUNNER_TESTS_USERNAME:-}"
+          TESTS_TOKEN="${RUNNER_TESTS_TOKEN:-}"
+
+          if [ -z "$TESTS_TOKEN" ] || [ -z "$TESTS_USERNAME" ]; then
+            echo "❌ RUNNER_TESTS_USERNAME / RUNNER_TESTS_TOKEN 未配置!"
+            echo "测试必须从私有的 tests 仓库获取"
+            exit 1
+          fi
+          
+          # Resolve Gitea Host
+          if [ -n "$EXTERNAL_GITEA_HOST" ]; then
+            HOST="$EXTERNAL_GITEA_HOST"
+          elif [ -n "$GITEA_ROOT_URL" ]; then
+            HOST=$(echo "$GITEA_ROOT_URL" | sed 's|https\?://||' | sed 's|/$||')
+          else
+            HOST=$(echo "${{ github.server_url }}" | sed 's|https\?://||' | cut -d'/' -f1)
+          fi
+          
+          echo "📥 Fetching private tests repository..."
+          echo "  Gitea host: $HOST"
+          
+          # Infer organization and assignment ID from repository name
+          ORG=$(echo "${{ github.repository }}" | cut -d'/' -f1)
+          REPO_NAME=$(echo "${{ github.repository }}" | cut -d'/' -f2)
+          
+          # Extract assignment ID from repo name (e.g., hw1-stu_xxx -> hw1, hw1-template -> hw1)
+          if echo "$REPO_NAME" | grep -q -- '-stu_'; then
+            ASSIGNMENT_ID=$(echo "$REPO_NAME" | sed 's/-stu_.*//')
+          elif echo "$REPO_NAME" | grep -q -- '-template'; then
+            ASSIGNMENT_ID=$(echo "$REPO_NAME" | sed 's/-template.*//')
+          else
+            ASSIGNMENT_ID="hw1"  # fallback
+          fi
+          
+          echo "  Organization: $ORG"
+          echo "  Assignment ID: $ASSIGNMENT_ID"
+          
+          AUTH_URL="http://${TESTS_USERNAME}:${TESTS_TOKEN}@${HOST}/${ORG}/${ASSIGNMENT_ID}-tests.git"
+          if ! git -c http.sslVerify=false clone --depth=1 "$AUTH_URL" _priv_tests 2>&1; then
+            echo "❌ Failed to clone ${ASSIGNMENT_ID}-tests repository!"
+            exit 1
+          fi
+          
+          # 验证测试目录存在
+          if [ ! -d "_priv_tests/r" ]; then
+            echo "❌ r/ directory not found in ${ASSIGNMENT_ID}-tests!"
+            exit 1
+          fi
+          
+          if [ ! -d "_priv_tests/r/tests" ]; then
+            echo "❌ r/tests/ not found in ${ASSIGNMENT_ID}-tests!"
+            exit 1
+          fi
+          
+          # 复制测试到 tests/
+          mkdir -p tests
+          rsync -a _priv_tests/r/tests/ tests/
+          echo "✅ Tests copied: _priv_tests/r/tests/ → tests/"
+          
+          # 验证测试文件
+          if [ -z "$(find tests -name 'test_*.R' 2>/dev/null)" ]; then
+            echo "❌ No test files found in tests/ directory!"
+            exit 1
+          fi
+          
+          echo "✅ Test suite ready:"
+          find tests -name 'test_*.R'
+      
+      - name: Run tests
         working-directory: ${{ github.workspace }}
         run: |
-          if [ -z "$TESTS_TOKEN" ]; then
-            echo "Warning: TESTS_TOKEN not set, skipping private tests"
-          else
-            GITEA_HOST=$(echo "${{ github.server_url }}" | sed 's|https\?://||' | cut -d'/' -f1)
-            git clone https://oauth2:$TESTS_TOKEN@${GITEA_HOST}/course-test/r-hw1-tests.git _priv_tests || true
-            if [ -d "_priv_tests/tests" ]; then
-              cp -r _priv_tests/tests/* tests/ || true
-            fi
-          fi
+          Rscript -e 'library(testthat); test_dir("tests", reporter = JunitReporter$new(file = "junit.xml"))' || true
       
-      - name: Run tests using testthat
+      - name: Grade
         working-directory: ${{ github.workspace }}
         env:
           LANGUAGE: r
         run: |
-          Rscript -e 'library(testthat); library(jsonlite); results <- test_dir("tests", reporter="json"); write_json(results, "testthat-report.json")' || true
+          python3 ./.autograde/grade.py --junit junit.xml --out grade.json --summary summary.md
       
-      - name: Extract test results
+      - name: Prepare artifacts
         working-directory: ${{ github.workspace }}
         run: |
-          if [ -f testthat-report.json ]; then
-            echo "✅ Testthat report generated"
-          else
-            echo "⚠️ No testthat-report.json found"
-            echo '{"tests":[],"summary":{"total":0,"passed":0,"failed":0}}' > testthat-report.json
-          fi
-      
-      - name: Grade
-        working-directory: ${{ github.workspace }}
-        run: |
-          python3 ./.autograde/grade.py --r testthat-report.json --out grade.json --summary summary.md
+          mkdir -p artifacts
+          cp junit.xml summary.md grade.json artifacts/ 2>/dev/null || true
       
       - name: Create grade metadata
         working-directory: ${{ github.workspace }}
         env:
-          ASSIGNMENT_ID: hw1
-          REPO: ${{ github.repository }}
           LANGUAGE: r
+          REPO: ${{ github.repository }}
         run: |
           if [ ! -f grade.json ]; then
             echo "⚠️ grade.json not found, skipping metadata creation"
             exit 0
           fi
           
-          export GRADE_TYPE=programming
-          python3 ./.autograde/create_minimal_metadata.py > metadata.json || echo "{}" > metadata.json
-          echo "✅ Grade metadata created"
-          cat metadata.json
+          # 生成 JSON 元数据
+          if [ -f ./.autograde/create_grade_metadata.py ]; then
+            python3 ./.autograde/create_grade_metadata.py > metadata.json || echo "{}" > metadata.json
+            echo "✅ Grade metadata created (using create_grade_metadata.py)"
+          elif [ -f ./.autograde/create_minimal_metadata.py ]; then
+            export GRADE_TYPE=programming
+            python3 ./.autograde/create_minimal_metadata.py > metadata.json || echo "{}" > metadata.json
+            echo "✅ Grade metadata created (using create_minimal_metadata.py)"
+          else
+            echo "⚠️ No metadata creation script found, skipping"
+            echo "{}" > metadata.json
+          fi
       
       - name: Upload metadata (teacher only)
         if: env.RUNNER_METADATA_REPO != '' && env.RUNNER_METADATA_TOKEN != ''
@@ -122,28 +176,25 @@ jobs:
           METADATA_REPO: ${{ env.RUNNER_METADATA_REPO }}
           METADATA_TOKEN: ${{ env.RUNNER_METADATA_TOKEN }}
           METADATA_BRANCH: ${{ env.RUNNER_METADATA_BRANCH }}
-        run: |
-          python3 ./.autograde/upload_metadata.py \
-            --metadata-repo "$METADATA_REPO" \
-            --token "$METADATA_TOKEN" \
-            --branch "$METADATA_BRANCH" \
-            --student-repo "${{ github.repository }}" \
-            --file metadata.json
-      
-      - name: Comment on PR
-        env:
-          GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EVENT_NAME: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          STUDENT_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
           COMMIT_SHA: ${{ github.sha }}
-        working-directory: ${{ github.workspace }}
+          SERVER_URL: ${{ github.server_url }}
         run: |
-          if [ ! -f summary.md ]; then
-            echo "⚠️ No summary.md found"
+          set -e
+          if [ ! -f metadata.json ]; then
+            echo "No metadata.json found, skip uploading."
             exit 0
           fi
-          
-          export COMMENT_SUMMARY=$(cat summary.md)
-          export GRADE_METADATA=$(cat metadata.json 2>/dev/null || echo "{}")
-          
-          python3 ./.autograde/post_comment.py
+
+          python3 ./.autograde/upload_metadata.py \
+            --metadata-file metadata.json \
+            --metadata-repo "${METADATA_REPO}" \
+            --branch "${METADATA_BRANCH:-main}" \
+            --student-repo "${STUDENT_REPO}" \
+            --run-id "${RUN_ID}" \
+            --commit-sha "${COMMIT_SHA}" \
+            --workflow grade \
+            --server-url "${SERVER_URL}" \
+            --external-host "${EXTERNAL_GITEA_HOST}"
+          rm -f metadata.json
