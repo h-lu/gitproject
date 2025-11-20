@@ -105,18 +105,19 @@ def ensure_repo_exists(gitea_url, token, org, repo_name, source_dir, is_private=
     if source_dir and Path(source_dir).exists():
         print(f"Pushing content from {source_dir}...")
         
-        # Copy autograde scripts from scripts/autograde to template/.autograde
-        project_root = Path(__file__).parent.parent
-        autograde_source = project_root / "scripts" / "autograde"
-        autograde_dest = Path(source_dir) / ".autograde"
-        
-        if autograde_source.exists():
-            print(f"  Copying autograde scripts to {autograde_dest}...")
-            autograde_dest.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(autograde_source, autograde_dest, dirs_exist_ok=True)
-            print(f"  ✅ Autograde scripts copied")
-        else:
-            print(f"  ⚠️  Warning: Autograde scripts not found at {autograde_source}")
+        # Copy autograde scripts ONLY for template repositories (not tests)
+        if is_template:
+            project_root = Path(__file__).parent.parent
+            autograde_source = project_root / "scripts" / "autograde"
+            autograde_dest = Path(source_dir) / ".autograde"
+            
+            if autograde_source.exists():
+                print(f"  Copying autograde scripts to {autograde_dest}...")
+                autograde_dest.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(autograde_source, autograde_dest, dirs_exist_ok=True)
+                print(f"  ✅ Autograde scripts copied")
+            else:
+                print(f"  ⚠️  Warning: Autograde scripts not found at {autograde_source}")
         
         # Initialize git repo if needed
         git_dir = Path(source_dir) / ".git"
