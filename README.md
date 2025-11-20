@@ -2,51 +2,187 @@
 
 基于 Gitea Actions 的多课程自动评分系统，支持 Python、Java、R 和 LLM 评分。
 
-> **📌 重要提示**: 本系统已重构为多课程/多作业模式。每个课程和作业都通过 `courses/` 目录下的 YAML 配置文件管理。
+> **📌 重要提示**: 本系统已重构为多课程/多作业模式。评分脚本已集中化到 `scripts/autograde/`，所有课程共享。
 
 ## ✨ 主要特性
 
 - 🎓 **多课程支持**: 每个课程独立管理，拥有独立的 Gitea 组织
 - 📝 **多作业管理**: 每个课程可以有多个作业，配置独立
 - 🤖 **自动评分**: 基于 Gitea Actions 的 CI/CD 评分流水线
-- 🧪 **多语言支持**: Python、Java、R
+- 🧪 **多语言支持**: Python (3.11)、Java (JDK 21)、R (4.3.1)
 - 💬 **LLM 评分**: 支持使用大语言模型评分简答题
 - 📊 **成绩收集**: 自动收集所有学生成绩到 CSV
+- 🔄 **集中化管理**: 评分脚本和 workflow 模板统一管理
+- 🇨🇳 **CN 镜像加速**: 使用腾讯云、清华、阿里云镜像加速依赖安装
+
+## 📂 项目结构
+
+```
+gitproject/
+├── scripts/                    # 管理脚本
+│   ├── autograde/             # 🆕 集中化的评分脚本
+│   │   ├── grade.py           # 编程题评分
+│   │   ├── llm_grade.py       # LLM 简答题评分
+│   │   ├── objective_grade.py # 客观题评分
+│   │   ├── upload_metadata.py # 成绩上传
+│   │   └── workflow_templates/# Workflow 模板 (python, java, r)
+│   ├── generate_repos.py      # 生成学生
+
+仓库
+│   ├── sync_autograde.py      # 🆕 同步评分脚本到作业
+│   ├── collect_grades.py      # 收集成绩
+│   └── quick_collect.sh       # 快速收集脚本
+├── courses/                   # 课程目录
+│   └── CS101/                # 示例课程
+│       ├── course_config.yaml # 课程配置
+│       ├── students.txt       # 学生列表
+│       └── assignments/       # 作业目录
+│           ├── hw_python/    # Python 作业示例
+│           ├── hw_java/      # Java 作业示例
+│           └── hw_r/         # R 作业示例
+└── docs/                     # 文档
+```
 
 ## 📚 文档
 
 完整文档位于 `docs/` 目录：
 
--   **[👉 快速开始](docs/GETTING_STARTED.md)**: 系统配置和运行第一个课程
--   **[🎓 教师指南](docs/INSTRUCTOR_GUIDE.md)**: 管理课程和作业
--   **[📖 学生指南](docs/STUDENT_GUIDE.md)**: 学生提交作业流程
+- 📖 **[快速开始](docs/GETTING_STARTED.md)**: 系统配置和运行第一个课程
+- 🎓 **[教师指南](docs/INSTRUCTOR_GUIDE.md)**: 管理课程和作业
+- 👨‍💻 **[开发者指南](docs/DEVELOPER_GUIDE.md)**: 系统架构和故障排除
+- 👨‍🎓 **[学生指南](docs/STUDENT_GUIDE.md)**: 学生提交作业流程
+- 🛠️  **[脚本文档](scripts/README.md)**: 所有管理脚本的详细说明
 
-## 🚀 快速开始 (多课程示例)
+## 🚀 快速开始
+
+### 1. 启动服务
 
 ```bash
-# 1. 启动服务
 docker-compose up -d
-
-# 2. 配置环境变量
-cp .env.example .env
-# 编辑 .env 设置 GITEA_URL、GITEA_ADMIN_TOKEN 等
-
-# 2.5 同步 Runner 配置
-./scripts/sync_runner_config.sh
-docker-compose restart runner
-
-# 3. 创建课程
-mkdir -p courses/CS101
-# 创建课程配置和学生列表（参考文档）
-
-# 4. 生成学生仓库
-python3 scripts/generate_repos.py --course courses/CS101 --assignment hw1
-
-# 5. 收集成绩
-python3 scripts/collect_grades.py --course courses/CS101 --assignment hw1 --output grades.csv
 ```
 
-详细步骤请参考 [快速开始指南](docs/GETTING_STARTED.md)。
+### 2. 配置环境
+
+```bash
+# 复制环境变量模板
+cp .env.example .env
+
+# 编辑 .env 设置必要的变量
+# - GITEA_ADMIN_TOKEN: Gitea 管理员 Token
+# - RUNNER_TESTS_TOKEN: Runner 访问私有测试的 Token
+# - RUNNER_METADATA_TOKEN: 上传成绩元数据的 Token
+nano .env
+
+# 同步 Runner 配置
+./scripts/sync_runner_config.sh
+docker-compose restart runner
+```
+
+### 3. 创建课程和作业
+
+```bash
+# 查看示例课程
+ls courses/CS101/
+
+# 作业结构
+courses/CS101/assignments/hw_python/
+├── config.yaml       # 作业配置
+├── template/         # 学生仓库模板
+│   ├── src/         # 源代码
+│   ├── .gitea/workflows/  # CI/CD workflows
+│   └── README.md
+└── tests/           # 私有测试（推送到 Gitea）
+    ├── python/tests/    # 编程测试
+    ├── llm/rubric.json  # LLM 评分标准
+    └── objective/       # 客观题答案
+```
+
+### 4. 生成学生仓库
+
+```bash
+# Python 作业
+python3 scripts/generate_repos.py \
+  --course courses/CS101 \
+  --assignment hw_python
+
+# Java 作业
+python3 scripts/generate_repos.py \
+  --course courses/CS101 \
+  --assignment hw_java
+
+# R 作业
+python3 scripts/generate_repos.py \
+  --course courses/CS101 \
+  --assignment hw_r
+```
+
+### 5. 收集成绩
+
+```bash
+# 使用快速收集脚本
+./scripts/quick_collect.sh -c courses/CS101 -a hw_python
+
+# 或使用 Python 脚本
+python3 scripts/collect_grades.py \
+  --course courses/CS101 \
+  --assignment hw_python \
+  --output grades.csv
+```
+
+## 🔧 核心工作流
+
+### 评分脚本同步
+
+评分脚本现在集中在 `scripts/autograde/`，使用以下命令同步到所有作业：
+
+```bash
+# 同步到所有课程的所有作业
+python3 scripts/sync_autograde.py
+
+# 仅同步指定课程
+python3 scripts/sync_autograde.py --course courses/CS101
+```
+
+### 自动评分流程
+
+1. **学生提交**: Push 代码到 `main` 分支
+2. **触发 CI/CD**: Gitea Actions 自动运行
+3. **运行测试**: 
+   - 编程题: pytest/JUnit/testthat
+   - 简答题: LLM 评分
+   - 客观题: JSON 比对
+4. **生成成绩**: 创建 `grade.json` 和 `metadata.json`
+5. **上传元数据**: 推送到 `course-metadata` 仓库
+6. **收集成绩**: 教师运行收集脚本获取 CSV
+
+## 💡 主要改进
+
+### v2.0 更新 (最新)
+
+- ✅ **集中化评分脚本**: `scripts/autograde/` 统一管理
+- ✅ **自动脚本同步**: `sync_autograde.py` 自动分发到作业
+- ✅ **生成时自动复制**: 创建新作业时自动包含评分脚本
+- ✅ **Workflow 模板**: 标准化的 Python/Java/R workflow
+- ✅ **CN 镜像加速**: 腾讯云 apt/PyPI、清华 CRAN、阿里云 Maven
+- ✅ **动态参数推断**: 自动从仓库名推断 assignment_id
+- ✅ **元数据更新支持**: upload_metadata.py 支持 PUT 更新
+
+## 🎯 支持的语言
+
+| 语言 | 版本 | 测试框架 | 依赖镜像 |
+|------|------|----------|----------|
+| **Python** | 3.11 | pytest | 腾讯云 PyPI |
+| **Java** | JDK 21 + Gradle 9.0 | JUnit 5 | 阿里云 Maven |
+| **R** | 4.3.1 | testthat | 清华 CRAN |
+
+## 🤝 贡献
+
+欢迎提交 Issue 和 Pull Request！
+
+## 📄 许可证
+
+MIT License
+
 
 ## 📁 项目结构
 
