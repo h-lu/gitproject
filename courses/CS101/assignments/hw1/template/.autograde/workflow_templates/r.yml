@@ -39,7 +39,7 @@ jobs:
           done
           apt-get -o Acquire::Check-Valid-Until=false -o Acquire::AllowInsecureRepositories=true update -y
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            git ca-certificates libcurl4-openssl-dev libssl-dev libxml2-dev python3 python3-pip
+            git ca-certificates libcurl4-openssl-dev libssl-dev libxml2-dev python3 python3-pip nodejs rsync nodejs rsync
           pip3 install --break-system-packages python-dotenv -i https://mirrors.cloud.tencent.com/pypi/simple || \
             pip3 install python-dotenv -i https://mirrors.cloud.tencent.com/pypi/simple
           rm -rf /var/lib/apt/lists/*

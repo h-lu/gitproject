@@ -31,8 +31,8 @@ jobs:
             sed -i -E 's|https?://ports.ubuntu.com|http://mirrors.cloud.tencent.com|g' "$f" || true
           done
           apt-get -o Acquire::Check-Valid-Until=false -o Acquire::AllowInsecureRepositories=true update -y
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates python3 python3-pip
-          pip3 install --break-system-packages python-dotenv -i https://mirrors.cloud.tencent.com/pypi/simple
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates python3 python3-pip nodejs rsync
+          pip3 install --break-system-packages python-dotenv requests -i https://mirrors.cloud.tencent.com/pypi/simple
           rm -rf /var/lib/apt/lists/*
       
       - name: Checkout code
@@ -47,19 +47,86 @@ jobs:
 
       
       - name: Fetch hidden tests (if available)
-        env:
-          TESTS_TOKEN: ${{ secrets.TESTS_TOKEN }}
         working-directory: ${{ github.workspace }}
         run: |
-          if [ -z "$TESTS_TOKEN" ]; then
-            echo "Warning: TESTS_TOKEN not set, skipping private tests"
-          else
-            GITEA_HOST=$(echo "${{ github.server_url }}" | sed 's|https\?://||' | cut -d'/' -f1)
-            git clone https://oauth2:$TESTS_TOKEN@${GITEA_HOST}/CS101-2025Fall/hw2-tests.git _priv_tests || true
-            if [ -d "_priv_tests/src/test" ]; then
-              rsync -a _priv_tests/src/test/ src/test/ || true
-            fi
+          set -e
+          
+          TESTS_USERNAME="${RUNNER_TESTS_USERNAME:-}"
+          TESTS_TOKEN="${RUNNER_TESTS_TOKEN:-}"
+          
+          if [ -z "$TESTS_TOKEN" ] || [ -z "$TESTS_USERNAME" ]; then
+            echo "Warning: RUNNER_TESTS_USERNAME / RUNNER_TESTS_TOKEN not set, skipping private tests"
+            exit 0
           fi
+          
+          # Resolve Gitea Host
+          if [ -n "$EXTERNAL_GITEA_HOST" ]; then
+            HOST="$EXTERNAL_GITEA_HOST"
+          elif [ -n "$GITEA_ROOT_URL" ]; then
+            HOST=$(echo "$GITEA_ROOT_URL" | sed 's|https\?://||' | sed 's|/$||')
+          else
+            HOST=$(echo "${{ github.server_url }}" | sed 's|https\?://||' | cut -d'/' -f1)
+          fi
+          
+          echo "📥 Fetching private tests repository..."
+          echo "  Gitea host: $HOST"
+          echo "  🔐 TESTS_USERNAME length: ${#TESTS_USERNAME}"
+          echo "  🔐 TESTS_TOKEN length: ${#TESTS_TOKEN}"
+          
+          # Infer organization and assignment ID from repository name
+          # Repository format: ORG/assignmentID-stu_studentID or ORG/assignmentID-template
+          echo "::add-mask::$TESTS_TOKEN"
+          echo "::add-mask::$TESTS_USERNAME"
+          ORG=$(echo "${{ github.repository }}" | cut -d'/' -f1)
+          REPO_NAME=$(echo "${{ github.repository }}" | cut -d'/' -f2)
+          
+          # Extract assignment ID from repo name (e.g., hw2-stu_xxx -> hw2, hw2-template -> hw2)
+          if echo "$REPO_NAME" | grep -q -- '-stu_'; then
+            ASSIGNMENT_ID=$(echo "$REPO_NAME" | sed 's/-stu_.*//')
+          elif echo "$REPO_NAME" | grep -q -- '-template'; then
+            ASSIGNMENT_ID=$(echo "$REPO_NAME" | sed 's/-template.*//')
+          else
+            ASSIGNMENT_ID="hw1"  # fallback
+          fi
+          
+          echo "  Organization: $ORG"
+          echo "  Assignment ID: $ASSIGNMENT_ID"
+          
+          # Clone private test repository
+          AUTH_URL="http://${TESTS_USERNAME}:${TESTS_TOKEN}@${HOST}/${ORG}/${ASSIGNMENT_ID}-tests.git"
+          
+          if ! git -c http.sslVerify=false clone --depth=1 "$AUTH_URL" _priv_tests 2>&1; then
+            echo "❌ Failed to clone ${ASSIGNMENT_ID}-tests repository!"
+            echo "Please check:"
+            echo "  • RUNNER_TESTS_USERNAME / RUNNER_TESTS_TOKEN are correct"
+            echo "  • TESTS_TOKEN has read:repository permission"
+            echo "  • ${ORG}/${ASSIGNMENT_ID}-tests repository exists"
+            exit 1
+          fi
+          
+          # Verify test directory exists
+          if [ ! -d "_priv_tests/java" ]; then
+            echo "❌ java/ directory not found in ${ASSIGNMENT_ID}-tests!"
+            exit 1
+          fi
+          
+          if [ ! -d "_priv_tests/java/src/test" ]; then
+            echo "❌ java/src/test/ not found in ${ASSIGNMENT_ID}-tests!"
+            exit 1
+          fi
+          
+          # Copy tests to src/test/
+          rsync -a _priv_tests/java/src/test/ src/test/
+          echo "✅ Private tests copied: _priv_tests/java/src/test/ → src/test/"
+          
+          # Verify test files
+          if [ -z "$(find src/test -name '*Test.java' 2>/dev/null)" ]; then
+            echo "❌ No test files found in src/test/ directory!"
+            exit 1
+          fi
+          
+          echo "✅ Test suite ready:"
+          find src/test -name '*Test.java'
       
       - name: Run tests using Gradle
         working-directory: ${{ github.workspace }}
@@ -95,7 +162,6 @@ jobs:
       - name: Create grade metadata
         working-directory: ${{ github.workspace }}
         env:
-          ASSIGNMENT_ID: hw2
           REPO: ${{ github.repository }}
           LANGUAGE: java
         run: |
@@ -119,26 +185,13 @@ jobs:
           METADATA_BRANCH: ${{ env.RUNNER_METADATA_BRANCH }}
         run: |
           python3 ./.autograde/upload_metadata.py \
+            --metadata-file metadata.json \
             --metadata-repo "$METADATA_REPO" \
-            --token "$METADATA_TOKEN" \
-            --branch "$METADATA_BRANCH" \
+            --branch "${METADATA_BRANCH:-main}" \
             --student-repo "${{ github.repository }}" \
-            --file metadata.json
+            --run-id "${{ github.run_id }}" \
+            --commit-sha "${{ github.sha }}" \
+            --workflow "grade" \
+            --server-url "${{ github.server_url }}" \
+            --external-host "${{ env.EXTERNAL_GITEA_HOST }}"
       
-      - name: Comment on PR
-        env:
-          GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EVENT_NAME: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          COMMIT_SHA: ${{ github.sha }}
-        working-directory: ${{ github.workspace }}
-        run: |
-          if [ ! -f summary.md ]; then
-            echo "⚠️ No summary.md found"
-            exit 0
-          fi
-          
-          export COMMENT_SUMMARY=$(cat summary.md)
-          export GRADE_METADATA=$(cat metadata.json 2>/dev/null || echo "{}")
-          
-          python3 ./.autograde/post_comment.py
