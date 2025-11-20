@@ -79,13 +79,53 @@ grading:
   enable_tests: true
 ```
 
-### 发布作业
-生成学生仓库：
+## 3. 同步评分脚本
+
+评分脚本现在集中在 `scripts/autograde/` 目录，所有课程共享。修改后需要同步到各个作业：
 
 ```bash
-python3 scripts/generate_repos.py \
-  --course courses/CS101 \
-  --assignment hw1
+# 同步到所有课程
+python3 scripts/sync_autograde.py
+
+# 仅同步指定课程
+python3 scripts/sync_autograde.py --course courses/CS101
+```
+
+这会将 `scripts/autograde/` 的内容复制到每个作业的 `template/.autograde/` 目录。
+
+## 4. 配置作业
+
+作业位于 `courses/<COURSE_ID>/assignments/<ASSIGNMENT_ID>`。
+
+### 结构
+*   `config.yaml`: 作业元数据。
+*   `template/`: 提供给学生的起始代码仓库。
+*   `tests/`: 包含隐藏测试和答案的私有仓库。
+
+### 作业配置
+编辑 `courses/<COURSE_ID>/assignments/<ASSIGNMENT_ID>/config.yaml`：
+
+```yaml
+title: "作业 1"
+deadline: "2025-12-01T23:59:59"
+language: "python"
+grading:
+  enable_llm: true
+  enable_tests: true
+```
+
+### 发布作业
+### 生成学生仓库
+
+```bash
+# Python 作业
+python3 scripts/generate_repos.py --course courses/CS101 --assignment hw_python
+
+# Java 作业
+python3 scripts/generate_repos.py --course courses/CS101 --assignment hw_java
+
+# R 作业
+python3 scripts/generate_repos.py --course courses/CS101 --assignment hw_r
 ```
 
 这将：
@@ -93,18 +133,18 @@ python3 scripts/generate_repos.py \
 2.  创建/更新 `hw1-template` 和 `hw1-tests` 仓库。
 3.  为每个学生创建私有仓库（例如 `hw1-stu_student1`）。
 
-## 3. 评分与反馈
+## 5. 评分与反馈
 
 当学生推送代码时，评分会通过 Gitea Actions 自动进行。
 
-### 查看成绩
-将所有成绩收集到 CSV 文件：
+### 收集成绩
 
 ```bash
-python3 scripts/collect_grades.py \
-  --course courses/CS101 \
-  --assignment hw1 \
-  --output grades.csv
+# 使用快速收集脚本
+./scripts/quick_collect.sh -c courses/CS101 -a hw_python
+
+# 或使用 Python 脚本
+python3 scripts/collect_grades.py --course courses/CS101 --assignment hw_python --output grades.csv
 ```
 
 ### 手动触发
