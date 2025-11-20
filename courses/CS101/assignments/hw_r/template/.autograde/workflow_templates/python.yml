@@ -1,0 +1,206 @@
+name: autograde-python
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  python:
+    runs-on: docker
+    container: python:3.11
+    timeout-minutes: 15
+    
+    steps:
+      - name: Install dependencies (CN mirror)
+        run: |
+          set -e
+          # 替换 Debian/Ubuntu 源为腾讯云镜像
+          for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+            [ -f "$f" ] || continue
+            sed -i -E 's|https?://deb.debian.org|http://mirrors.cloud.tencent.com|g' "$f" || true
+            sed -i -E 's|https?://security.debian.org|http://mirrors.cloud.tencent.com/debian-security|g' "$f" || true
+            sed -i -E 's|https?://archive.ubuntu.com|http://mirrors.cloud.tencent.com|g' "$f" || true
+            sed -i -E 's|https?://ports.ubuntu.com|http://mirrors.cloud.tencent.com|g' "$f" || true
+          done
+          apt-get -o Acquire::Check-Valid-Until=false -o Acquire::AllowInsecureRepositories=true update -y
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates python3 python3-pip nodejs rsync
+          rm -rf /var/lib/apt/lists/*
+      
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+      
+      - name: Fix permissions
+        run: |
+          # Ensure workspace is owned by current user
+          chown -R $(whoami):$(whoami) ${{ github.workspace }} || true
+
+      - name: Install Python deps
+        working-directory: ${{ github.workspace }}
+        run: |
+          # 使用腾讯云镜像源加速
+          python -m pip install -U pip -i https://mirrors.cloud.tencent.com/pypi/simple
+          if [ -f requirements.txt ]; then pip install -r requirements.txt -i https://mirrors.cloud.tencent.com/pypi/simple; fi
+          if [ -f pyproject.toml ]; then pip install . -i https://mirrors.cloud.tencent.com/pypi/simple; fi
+          pip install pytest pytest-cov junit-xml python-dotenv requests -i https://mirrors.cloud.tencent.com/pypi/simple
+      
+      - name: Fetch private tests
+        working-directory: ${{ github.workspace }}
+        env:
+          EXTERNAL_GITEA_HOST: ${{ secrets.EXTERNAL_GITEA_HOST }}
+        run: |
+          set -e
+
+          TESTS_USERNAME="${RUNNER_TESTS_USERNAME:-}"
+          TESTS_TOKEN="${RUNNER_TESTS_TOKEN:-}"
+
+          if [ -z "$TESTS_TOKEN" ] || [ -z "$TESTS_USERNAME" ]; then
+            echo "❌ RUNNER_TESTS_USERNAME / RUNNER_TESTS_TOKEN 未配置!"
+            echo "测试必须从私有的 tests 仓库获取"
+            exit 1
+          fi
+          
+          # Resolve Gitea Host
+          if [ -n "$EXTERNAL_GITEA_HOST" ]; then
+            HOST="$EXTERNAL_GITEA_HOST"
+          elif [ -n "$GITEA_ROOT_URL" ]; then
+            HOST=$(echo "$GITEA_ROOT_URL" | sed 's|https\?://||' | sed 's|/$||')
+          else
+            HOST=$(echo "${{ github.server_url }}" | sed 's|https\?://||' | cut -d'/' -f1)
+          fi
+          
+          echo "📥 Fetching private tests repository..."
+          echo "  Gitea host: $HOST"
+          
+          # Infer organization and assignment ID from repository name
+          ORG=$(echo "${{ github.repository }}" | cut -d'/' -f1)
+          REPO_NAME=$(echo "${{ github.repository }}" | cut -d'/' -f2)
+          
+          # Extract assignment ID from repo name (e.g., hw1-stu_xxx -> hw1, hw1-template -> hw1)
+          if echo "$REPO_NAME" | grep -q -- '-stu_'; then
+            ASSIGNMENT_ID=$(echo "$REPO_NAME" | sed 's/-stu_.*//')
+          elif echo "$REPO_NAME" | grep -q -- '-template'; then
+            ASSIGNMENT_ID=$(echo "$REPO_NAME" | sed 's/-template.*//')
+          else
+            ASSIGNMENT_ID="hw1"  # fallback
+          fi
+          
+          echo "  Organization: $ORG"
+          echo "  Assignment ID: $ASSIGNMENT_ID"
+          
+          AUTH_URL="http://${TESTS_USERNAME}:${TESTS_TOKEN}@${HOST}/${ORG}/${ASSIGNMENT_ID}-tests.git"
+          if ! git -c http.sslVerify=false clone --depth=1 "$AUTH_URL" _priv_tests 2>&1; then
+            echo "❌ Failed to clone ${ASSIGNMENT_ID}-tests repository!"
+            exit 1
+          fi
+          
+          # 验证测试目录存在
+          if [ ! -d "_priv_tests/python" ]; then
+            echo "❌ python/ directory not found in ${ASSIGNMENT_ID}-tests!"
+            exit 1
+          fi
+          
+          if [ ! -d "_priv_tests/python/tests" ]; then
+            echo "❌ python/tests/ not found in ${ASSIGNMENT_ID}-tests!"
+            exit 1
+          fi
+          
+          # 复制测试到 tests/
+          mkdir -p tests
+          rsync -a _priv_tests/python/tests/ tests/
+          echo "✅ Tests copied: _priv_tests/python/tests/ → tests/"
+          
+          # 复制数据文件（如果存在）
+          if [ -d "_priv_tests/python/data" ]; then
+            mkdir -p tests/data
+            rsync -a _priv_tests/python/data/ tests/data/
+            echo "✅ Data files copied: _priv_tests/python/data/ → tests/data/"
+          fi
+          
+          # 验证测试文件
+          if [ -z "$(find tests -name 'test_*.py' 2>/dev/null)" ]; then
+            echo "❌ No test files found in tests/ directory!"
+            exit 1
+          fi
+          
+          echo "✅ Test suite ready:"
+          find tests -name 'test_*.py'
+      
+      - name: Run tests
+        working-directory: ${{ github.workspace }}
+        run: |
+          # 设置随机种子
+          export PYTHONHASHSEED=2025
+          pytest -q --maxfail=0 --junitxml=junit.xml --tb=short || true
+      
+      - name: Grade
+        working-directory: ${{ github.workspace }}
+        run: |
+          python ./.autograde/grade.py --junit junit.xml --out grade.json --summary summary.md
+      
+      - name: Prepare artifacts
+        working-directory: ${{ github.workspace }}
+        run: |
+          mkdir -p artifacts
+          cp junit.xml summary.md grade.json artifacts/ 2>/dev/null || true
+      
+      - name: Create grade metadata
+        working-directory: ${{ github.workspace }}
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          if [ ! -f grade.json ]; then
+            echo "⚠️ grade.json not found, skipping metadata creation"
+            exit 0
+          fi
+          
+          # 生成 JSON 元数据
+          if [ -f ./.autograde/create_grade_metadata.py ]; then
+            python3 ./.autograde/create_grade_metadata.py > metadata.json || echo "{}" > metadata.json
+            echo "✅ Grade metadata created (using create_grade_metadata.py)"
+          elif [ -f ./.autograde/create_minimal_metadata.py ]; then
+            export GRADE_TYPE=programming
+            python3 ./.autograde/create_minimal_metadata.py > metadata.json || echo "{}" > metadata.json
+            echo "✅ Grade metadata created (using create_minimal_metadata.py)"
+          else
+            echo "⚠️ No metadata creation script found, skipping"
+            echo "{}" > metadata.json
+          fi
+      
+      - name: Upload metadata (teacher only)
+        if: env.RUNNER_METADATA_REPO != '' && env.RUNNER_METADATA_TOKEN != ''
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          METADATA_REPO: ${{ env.RUNNER_METADATA_REPO }}
+          METADATA_TOKEN: ${{ env.RUNNER_METADATA_TOKEN }}
+          METADATA_BRANCH: ${{ env.RUNNER_METADATA_BRANCH }}
+          STUDENT_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          COMMIT_SHA: ${{ github.sha }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -e
+          if [ ! -f metadata.json ]; then
+            echo "No metadata.json found, skip uploading."
+            exit 0
+          fi
+
+          python ./.autograde/upload_metadata.py \
+            --metadata-file metadata.json \
+            --metadata-repo "${METADATA_REPO}" \
+            --branch "${METADATA_BRANCH:-main}" \
+            --student-repo "${STUDENT_REPO}" \
+            --run-id "${RUN_ID}" \
+            --commit-sha "${COMMIT_SHA}" \
+            --workflow grade \
+            --server-url "${SERVER_URL}" \
+            --external-host "${EXTERNAL_GITEA_HOST}"
+          rm -f metadata.json
