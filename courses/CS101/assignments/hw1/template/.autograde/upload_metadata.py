@@ -87,12 +87,36 @@ def main() -> int:
     api_url = f"http://{host}/api/v1/repos/{owner}/{repo_name}/contents/{target_path}"
     message = f"Upload {args.workflow} metadata for {args.student_repo} {args.commit_sha}"
 
+    # Check if file exists to determine if we need to update (PUT) or create (POST)
+    get_req = urllib.request.Request(
+        api_url,
+        headers={"Authorization": f"token {token}"},
+        method="GET"
+    )
+    
+    sha = None
+    try:
+        with urllib.request.urlopen(get_req) as resp:
+            existing_file = json.loads(resp.read().decode())
+            sha = existing_file.get("sha")
+            print(f"File exists, updating (sha: {sha})")
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            print(f"Error checking file existence: {e}", file=sys.stderr)
+            return 1
+        # File doesn't exist, proceed with creation
+
     content = base64.b64encode(path.read_bytes()).decode()
-    data = json.dumps({
+    payload = {
         "content": content,
         "message": message,
         "branch": args.branch
-    }).encode()
+    }
+    
+    if sha:
+        payload["sha"] = sha
+        
+    data = json.dumps(payload).encode()
 
     req = urllib.request.Request(
         api_url,
@@ -101,7 +125,7 @@ def main() -> int:
             "Authorization": f"token {token}",
             "Content-Type": "application/json",
         },
-        method="POST",
+        method="PUT" if sha else "POST",
     )
 
     try:

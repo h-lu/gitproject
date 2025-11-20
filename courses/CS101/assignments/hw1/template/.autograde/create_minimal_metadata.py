@@ -31,11 +31,30 @@ def extract_student_id():
     return None
 
 
-if __name__ == "__main__":
-    main()
+
 
 
 def extract_assignment_id():
+    """从环境变量或仓库名中提取作业 ID"""
+    # 优先从环境变量获取
+    assignment_id = os.getenv("ASSIGNMENT_ID")
+    if assignment_id:
+        return assignment_id
+    
+    # 从仓库名提取（格式：hw1-stu_sit001 或 hw1-template）
+    repo = os.getenv("REPO", "")
+    if repo:
+        # 尝试匹配 hwX-stu_ 或 hwX-template
+        match = re.search(r'(hw\d+)-(?:stu|template)', repo)
+        if match:
+            return match.group(1)
+            
+        # 如果只是 hwX 格式
+        match = re.search(r'(hw\d+)$', repo)
+        if match:
+            return match.group(1)
+            
+    return "hw1"  # 默认回退
 
 def create_grade_metadata(grade_file='grade.json'):
     """从 grade.json 创建元数据，包含所有详细信息"""
@@ -261,5 +280,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

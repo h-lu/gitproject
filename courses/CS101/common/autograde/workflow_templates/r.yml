@@ -1,0 +1,149 @@
+# R 编程作业自动评分 Workflow 模板
+#
+# 使用方法：
+# 1. 复制此文件到 .gitea/workflows/grade.yml
+# 2. 根据需要调整 R 版本  
+# 3. 确保项目有正确的 DESCRIPTION 和 testthat 测试
+
+name: autograde-r
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  r-lang:
+    runs-on: docker
+    container:
+      image: r-base:4.3.1
+      options: --user root
+    timeout-minutes: 20
+    
+    steps:
+      - name: Install system dependencies (CN mirror)
+        run: |
+          set -e
+          # 替换 Debian/Ubuntu 源为腾讯云镜像
+          for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+            [ -f "$f" ] || continue
+            sed -i -E 's|https?://deb.debian.org|http://mirrors.cloud.tencent.com|g' "$f" || true
+            sed -i -E 's|https?://security.debian.org|http://mirrors.cloud.tencent.com/debian-security|g' "$f" || true
+            sed -i -E 's|https?://archive.ubuntu.com|http://mirrors.cloud.tencent.com|g' "$f" || true
+            sed -i -E 's|https?://ports.ubuntu.com|http://mirrors.cloud.tencent.com|g' "$f" || true
+          done
+          apt-get -o Acquire::Check-Valid-Until=false -o Acquire::AllowInsecureRepositories=true update -y
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            git ca-certificates libcurl4-openssl-dev libssl-dev libxml2-dev python3 python3-pip nodejs rsync nodejs rsync
+          pip3 install --break-system-packages python-dotenv -i https://mirrors.cloud.tencent.com/pypi/simple || \
+            pip3 install python-dotenv -i https://mirrors.cloud.tencent.com/pypi/simple
+          rm -rf /var/lib/apt/lists/*
+      
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+      
+      - name: Configure R CRAN mirror
+        run: |
+          # 使用清华大学 CRAN 镜像加速
+          echo 'options(repos=c(CRAN="https://mirrors.tuna.tsinghua.edu.cn/CRAN/"))' > ~/.Rprofile
+          cat ~/.Rprofile
+      
+      - name: Install R packages
+        working-directory: ${{ github.workspace }}
+        run: |
+          Rscript -e 'install.packages(c("testthat", "devtools", "jsonlite"), dependencies=TRUE)'
+      
+      - name: Fetch hidden tests (if available)
+        env:
+          TESTS_TOKEN: ${{ secrets.TESTS_TOKEN }}
+        working-directory: ${{ github.workspace }}
+        run: |
+          if [ -z "$TESTS_TOKEN" ]; then
+            echo "Warning: TESTS_TOKEN not set, skipping private tests"
+          else
+            GITEA_HOST=$(echo "${{ github.server_url }}" | sed 's|https\?://||' | cut -d'/' -f1)
+            git clone https://oauth2:$TESTS_TOKEN@${GITEA_HOST}/course-test/r-hw1-tests.git _priv_tests || true
+            if [ -d "_priv_tests/tests" ]; then
+              cp -r _priv_tests/tests/* tests/ || true
+            fi
+          fi
+      
+      - name: Run tests using testthat
+        working-directory: ${{ github.workspace }}
+        env:
+          LANGUAGE: r
+        run: |
+          Rscript -e 'library(testthat); library(jsonlite); results <- test_dir("tests", reporter="json"); write_json(results, "testthat-report.json")' || true
+      
+      - name: Extract test results
+        working-directory: ${{ github.workspace }}
+        run: |
+          if [ -f testthat-report.json ]; then
+            echo "✅ Testthat report generated"
+          else
+            echo "⚠️ No testthat-report.json found"
+            echo '{"tests":[],"summary":{"total":0,"passed":0,"failed":0}}' > testthat-report.json
+          fi
+      
+      - name: Grade
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 ./.autograde/grade.py --r testthat-report.json --out grade.json --summary summary.md
+      
+      - name: Create grade metadata
+        working-directory: ${{ github.workspace }}
+        env:
+          ASSIGNMENT_ID: hw1
+          REPO: ${{ github.repository }}
+          LANGUAGE: r
+        run: |
+          if [ ! -f grade.json ]; then
+            echo "⚠️ grade.json not found, skipping metadata creation"
+            exit 0
+          fi
+          
+          export GRADE_TYPE=programming
+          python3 ./.autograde/create_minimal_metadata.py > metadata.json || echo "{}" > metadata.json
+          echo "✅ Grade metadata created"
+          cat metadata.json
+      
+      - name: Upload metadata (teacher only)
+        if: env.RUNNER_METADATA_REPO != '' && env.RUNNER_METADATA_TOKEN != ''
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          METADATA_REPO: ${{ env.RUNNER_METADATA_REPO }}
+          METADATA_TOKEN: ${{ env.RUNNER_METADATA_TOKEN }}
+          METADATA_BRANCH: ${{ env.RUNNER_METADATA_BRANCH }}
+        run: |
+          python3 ./.autograde/upload_metadata.py \
+            --metadata-repo "$METADATA_REPO" \
+            --token "$METADATA_TOKEN" \
+            --branch "$METADATA_BRANCH" \
+            --student-repo "${{ github.repository }}" \
+            --file metadata.json
+      
+      - name: Comment on PR
+        env:
+          GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          COMMIT_SHA: ${{ github.sha }}
+        working-directory: ${{ github.workspace }}
+        run: |
+          if [ ! -f summary.md ]; then
+            echo "⚠️ No summary.md found"
+            exit 0
+          fi
+          
+          export COMMENT_SUMMARY=$(cat summary.md)
+          export GRADE_METADATA=$(cat metadata.json 2>/dev/null || echo "{}")
+          
+          python3 ./.autograde/post_comment.py
